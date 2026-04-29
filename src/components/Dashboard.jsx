@@ -1,6 +1,8 @@
 import React from 'react';
-
+import { useNavigate } from 'react-router-dom';
 const Dashboard = () => {
+  const navigate = useNavigate();
+
   return (
     // Główny kontener całej strony
     <div className="min-h-screen bg-gray-50 p-6 md:p-10 font-sans">
@@ -29,7 +31,7 @@ const Dashboard = () => {
             Włącz kamerę i pozwól trenerowi AI przeanalizować Twoją postawę w czasie rzeczywistym.
           </p>
           
-          <button className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-10 rounded-full text-lg shadow-lg shadow-blue-200 transform transition-all duration-200 hover:scale-105 active:scale-95 flex items-center space-x-3">
+          <button onClick={() => navigate('/trening')} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-10 rounded-full text-lg shadow-lg shadow-blue-200 transform transition-all duration-200 hover:scale-105 active:scale-95 flex items-center space-x-3">
             <span>Szybki Start</span>
           </button>
         </div>
