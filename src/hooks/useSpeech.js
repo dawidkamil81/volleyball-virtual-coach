@@ -13,6 +13,7 @@ const useSpeech = () => {
       utterance.lang = 'pl-PL'; // Język polski
       utterance.rate = 1.1;     // Prędkość (1.0 to domyślna, 1.1 jest nieco bardziej dynamiczna do treningu)
       utterance.pitch = 1.0;    // Ton głosu
+      utterance.volume = 1.0;
 
       // Odtwarzanie
       window.speechSynthesis.speak(utterance);
