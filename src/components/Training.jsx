@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useRef} from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useMediaPipe } from '../hooks/useMediaPipe';
 
 const Training = () => {
     const navigate = useNavigate();
-
     // Stany aplikacji
     const [repCount, setRepCount] = useState(0);
     const [energyLevel, setEnergyLevel] = useState(85);
@@ -11,6 +11,10 @@ const Training = () => {
     const [isCalibrated, setIsCalibrated] = useState(false);
     // wybor odbicia (domyslnie jest gorne)
     const [passType, setPassType] = useState('górne');
+    const videoRef = useRef(null);
+    const canvasRef = useRef(null);
+    //uzycie mediapipe
+    useMediaPipe(videoRef, canvasRef);
 
     return (
         <div className="min-h-screen bg-gray-900 text-white flex flex-col p-4 md:p-6 font-sans">
@@ -39,11 +43,8 @@ const Training = () => {
                 <section className="lg:col-span-3 bg-black rounded-3xl relative overflow-hidden flex items-center justify-center border border-gray-800 shadow-2xl">
 
                     {/* kontener na zrodlo z kamery */}
-                    <div className="absolute inset-0 flex items-center justify-center z-0">
-                        <p className="text-gray-600 font-medium tracking-widest uppercase animate-pulse">
-                            [ Strumień z kamery ]
-                        </p>
-                    </div>
+                    <video ref={videoRef} className="hidden" playsInline></video>
+                    <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover z-0" width="1280" height="720"></canvas>
 
                     {/*nakladka kalibracji (gdy nie jest skalibrowane)*/}
                     {!isCalibrated && (
