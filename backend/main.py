@@ -1,3 +1,4 @@
+"""FastAPI application: WebSocket trainer endpoint and CORS (development)."""
 
 from __future__ import annotations
 
@@ -22,4 +23,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.websocket("/ws/trainer")
+async def trainer_websocket(websocket: WebSocket) -> None:
+    await websocket.accept()
+    logger.info("WebSocket /ws/trainer accepted")
+    try:
+        while True:
+            try:
+                raw_text = await websocket.receive_text()
+            except WebSocketDisconnect:
+                logger.info("WebSocket client disconnected")
+                break
 
+            try:
+                _pose = PoseData.model_validate_json(raw_text)
+            except json.JSONDecodeError as exc:
+                await websocket.send_json(
+                    {
+                        "status": "error",
+                        "message": "Invalid JSON payload",
+                        "detail": str(exc),
+                    }
+                )
+                continue
+            except ValidationError as exc:
+                await websocket.send_json(
+                    {
+                        "status": "error",
+                        "message": "Pose data validation failed",
+                        "errors": exc.errors(
+                            include_url=False,
+                            include_context=False,
+                        ),
+                    }
+                )
+                continue
+
+            await websocket.send_json(
+                {
+                    "status": "ok",
+                    "message": "Received 33 landmarks",
+                }
+            )
+    finally:
+        logger.info("WebSocket /ws/trainer handler exiting")
