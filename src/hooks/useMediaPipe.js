@@ -26,6 +26,7 @@ export const useMediaPipe = (videoRef, canvasRef, onResultsCallback) => {
             const canvasCtx = canvasRef.current.getContext('2d');
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasRef.current.width, canvasRef.current.height);
 
             //szkielet
             if (results.poseLandmarks) {
