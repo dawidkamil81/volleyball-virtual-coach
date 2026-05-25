@@ -1,139 +1,158 @@
-import React, { useState, useRef} from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMediaPipe } from '../hooks/useMediaPipe';
 
 const Training = () => {
     const navigate = useNavigate();
-    // Stany aplikacji
+    
+    // Stany dla kamer
+    const [devices, setDevices] = useState([]);
+    const [frontCameraId, setFrontCameraId] = useState('');
+    const [sideCameraId, setSideCameraId] = useState('');
+
     const [repCount, setRepCount] = useState(0);
     const [energyLevel, setEnergyLevel] = useState(85);
-    // kalibracja postawy
     const [isCalibrated, setIsCalibrated] = useState(false);
-    // wybor odbicia (domyslnie jest gorne)
     const [passType, setPassType] = useState('górne');
-    const videoRef = useRef(null);
-    const canvasRef = useRef(null);
-    //uzycie mediapipe
-    useMediaPipe(videoRef, canvasRef);
+
+    // Referencje dla DWÓCH kamer
+    const videoFrontRef = useRef(null);
+    const canvasFrontRef = useRef(null);
+    const videoSideRef = useRef(null);
+    const canvasSideRef = useRef(null);
+
+    // Pobieranie listy kamer przy starcie komponentu
+    useEffect(() => {
+        const getDevices = async () => {
+            try {
+                // Wymuszenie zapytania o zgodę (inaczej przeglądarka ukryje nazwy kamer)
+                await navigator.mediaDevices.getUserMedia({ video: true });
+                const allDevices = await navigator.mediaDevices.enumerateDevices();
+                const videoInputDevices = allDevices.filter(device => device.kind === 'videoinput');
+                
+                setDevices(videoInputDevices);
+                
+                // Ustaw domyślne kamery, jeśli jakieś znaleziono
+                if (videoInputDevices.length > 0) {
+                    setFrontCameraId(videoInputDevices[0].deviceId);
+                    if (videoInputDevices.length > 1) {
+                        setSideCameraId(videoInputDevices[1].deviceId);
+                    }
+                }
+            } catch (err) {
+                console.error("Błąd dostępu do urządzeń:", err);
+            }
+        };
+        getDevices();
+    }, []);
+
+    // Uruchomienie DWÓCH instancji hooka z różnymi ID kamer
+    useMediaPipe(videoFrontRef, canvasFrontRef, frontCameraId, (results) => {
+        // Tu logika dla kamery przedniej (w przyszłości)
+    });
+
+    useMediaPipe(videoSideRef, canvasSideRef, sideCameraId, (results) => {
+        // Tu logika dla kamery bocznej (w przyszłości)
+    });
 
     return (
         <div className="min-h-screen bg-gray-900 text-white flex flex-col p-4 md:p-6 font-sans">
-
-            {/* header */}
-            <header className="flex justify-between items-center mb-6">
+            
+            <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
                 <div>
-                    <h1 className="text-2xl md:text-3xl font-bold text-gray-100 tracking-tight">Trening Siatkarski</h1>
-                    <p className="text-gray-400 text-sm mt-1">
-                        {isCalibrated
-                            ? "Twoja technika jest analizowana na biezaco przez Wirtualnego Trenera"
-                            : "Wymagana kalibracja do pomiaru proporcji ciała"}
-                    </p>
+                    <h1 className="text-2xl md:text-3xl font-bold text-gray-100 tracking-tight">Trening Siatkarski (Wielokamerowy)</h1>
+                    <p className="text-gray-400 text-sm mt-1">Analiza ułożenia rąk (Front) i pracy nóg (Bok)</p>
                 </div>
+
+                {/* Panele wyboru kamer */}
+                <div className="flex gap-4 bg-gray-800 p-3 rounded-xl border border-gray-700">
+                    <div className="flex flex-col">
+                        <label className="text-xs text-blue-400 font-bold mb-1 uppercase">Kamera: Front</label>
+                        <select 
+                            value={frontCameraId} 
+                            onChange={(e) => setFrontCameraId(e.target.value)}
+                            className="bg-gray-700 text-white text-sm rounded-lg border-none focus:ring-2 focus:ring-blue-500 max-w-[200px]"
+                        >
+                            <option value="">Wybierz kamerę...</option>
+                            {devices.map(device => (
+                                <option key={device.deviceId} value={device.deviceId}>{device.label || `Kamera ${device.deviceId.substring(0,5)}`}</option>
+                            ))}
+                        </select>
+                    </div>
+                    <div className="flex flex-col">
+                        <label className="text-xs text-green-400 font-bold mb-1 uppercase">Kamera: Bok</label>
+                        <select 
+                            value={sideCameraId} 
+                            onChange={(e) => setSideCameraId(e.target.value)}
+                            className="bg-gray-700 text-white text-sm rounded-lg border-none focus:ring-2 focus:ring-green-500 max-w-[200px]"
+                        >
+                            <option value="">Wybierz kamerę...</option>
+                            {devices.map(device => (
+                                <option key={device.deviceId} value={device.deviceId}>{device.label || `Kamera ${device.deviceId.substring(0,5)}`}</option>
+                            ))}
+                        </select>
+                    </div>
+                </div>
+
                 <button
                     onClick={() => navigate('/')}
-                    className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl font-bold shadow-lg transition-colors duration-200"
+                    className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl font-bold shadow-lg"
                 >
                     ZAKOŃCZ
                 </button>
             </header>
 
-            {/* glowny uklad */}
-            <main className="flex-1 grid grid-cols-1 lg:grid-cols-4 gap-6">
-                {/* widok z kamery */}
-                <section className="lg:col-span-3 bg-black rounded-3xl relative overflow-hidden flex items-center justify-center border border-gray-800 shadow-2xl">
+            <main className="flex-1 flex flex-col lg:flex-row gap-6">
+                
+                {/* SEKCJA WIDEO (Siatka 2 kamer) */}
+                <section className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    
+                    {/* WIDOK: FRONT */}
+                    <div className="bg-black rounded-3xl relative overflow-hidden border border-blue-500/50 shadow-lg min-h-[400px]">
+                        <div className="absolute top-4 left-4 z-10 bg-blue-600/80 px-3 py-1 rounded-lg text-sm font-bold uppercase tracking-widest backdrop-blur-sm">Front</div>
+                        <video ref={videoFrontRef} className="hidden" playsInline></video>
+                        <canvas ref={canvasFrontRef} className="absolute inset-0 w-full h-full object-cover z-0" width="640" height="480"></canvas>
+                        
+                        {!isCalibrated && (
+                            <div className="absolute inset-0 bg-black/60 z-20 flex items-center justify-center">
+                                <p className="text-blue-400 font-bold">Ustaw się twarzą do kamery</p>
+                            </div>
+                        )}
+                    </div>
 
-                    {/* kontener na zrodlo z kamery */}
-                    <video ref={videoRef} className="hidden" playsInline></video>
-                    <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover z-0" width="1280" height="720"></canvas>
+                    {/* WIDOK: BOK */}
+                    <div className="bg-black rounded-3xl relative overflow-hidden border border-green-500/50 shadow-lg min-h-[400px]">
+                        <div className="absolute top-4 left-4 z-10 bg-green-600/80 px-3 py-1 rounded-lg text-sm font-bold uppercase tracking-widest backdrop-blur-sm">Bok</div>
+                        <video ref={videoSideRef} className="hidden" playsInline></video>
+                        <canvas ref={canvasSideRef} className="absolute inset-0 w-full h-full object-cover z-0" width="640" height="480"></canvas>
 
-                    {/*nakladka kalibracji (gdy nie jest skalibrowane)*/}
-                    {!isCalibrated && (
-                        <div className="absolute inset-0 bg-black/80 z-20 flex flex-col items-center justify-center p-8 text-center backdrop-blur-sm">
-                            <h2 className="text-3xl font-bold text-white mb-2">Przygotowanie do treningu</h2>
-                            <p className="text-gray-300 max-w-lg mb-8 leading-relaxed">
-                                Stań w odległości 2-3 metrów od kamery, aby objęła całą Twoją sylwetkę. Pozwoli to algorytmowi poprawnie zmapować Twój wzrost.
-                            </p>
-
-                            {/* Wybór ćwiczenia */}
-                            <div className="bg-gray-800 p-2 rounded-2xl mb-8 flex gap-2 border border-gray-700">
+                        {!isCalibrated && (
+                            <div className="absolute inset-0 bg-black/60 z-20 flex flex-col items-center justify-center">
+                                <p className="text-green-400 font-bold mb-4">Ustaw się bokiem do kamery</p>
                                 <button
-                                    onClick={() => setPassType('górne')}
-                                    className={`px-6 py-3 rounded-xl font-bold transition-all ${passType === 'górne' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:text-white'}`}
+                                    onClick={() => setIsCalibrated(true)}
+                                    className="bg-green-600 hover:bg-green-500 px-6 py-2 rounded-full font-bold shadow-lg"
                                 >
-                                    Odbicie Górne
-                                </button>
-                                <button
-                                    onClick={() => setPassType('dolne')}
-                                    className={`px-6 py-3 rounded-xl font-bold transition-all ${passType === 'dolne' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:text-white'}`}
-                                >
-                                    Odbicie Dolne
+                                    SKALIBRUJ I START
                                 </button>
                             </div>
-
-                            <button
-                                onClick={() => setIsCalibrated(true)}
-                                className="bg-green-600 hover:bg-green-500 text-white font-bold py-4 px-10 rounded-full shadow-[0_0_20px_rgba(34,197,94,0.4)] transition-all duration-300 transform hover:scale-105 flex items-center gap-2"
-                            >
-                                ROZPOCZNIJ TRENING
-                            </button>
-                        </div>
-                    )}
-
-                    {/* komunikat o wybranym trybie */}
-                    {isCalibrated && (
-                        <div className="absolute top-6 left-6 z-10 bg-black/60 backdrop-blur-md px-5 py-3 rounded-2xl border border-gray-700 animate-fade-in">
-                            <span className="text-xs text-gray-400 uppercase tracking-wider block mb-1">Trenowany element</span>
-                            <span className="text-xl font-bold text-blue-400">
-                {passType === 'górne' ? 'Odbicie sposobem górnym' : 'Odbicie sposobem dolnym'}
-              </span>
-                        </div>
-                    )}
+                        )}
+                    </div>
                 </section>
 
-                <section className={`lg:col-span-1 flex flex-col gap-6 transition-opacity duration-500 ${!isCalibrated ? 'opacity-40 pointer-events-none' : 'opacity-100'}`}>
-
-                    {/*licznik powotorzen*/}
-                    <div className="bg-gray-800 rounded-3xl p-6 flex flex-col items-center justify-center border border-gray-700 shadow-lg h-1/3">
-                        <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-2 font-bold">Poprawne Odbicia</h2>
-                        <div className="text-7xl md:text-8xl font-black text-blue-500 drop-shadow-[0_0_15px_rgba(59,130,246,0.5)]">
-                            {repCount}
-                        </div>
+                {/* SEKCJA STATYSTYK BOCZNYCH (Zwężona dla zrobienia miejsca na kamery) */}
+                <section className="w-full lg:w-64 flex flex-row lg:flex-col gap-4">
+                    <div className="bg-gray-800 rounded-3xl p-4 flex-1 flex flex-col items-center justify-center border border-gray-700">
+                        <h2 className="text-gray-400 text-xs uppercase font-bold mb-2">Poprawne Odbicia</h2>
+                        <div className="text-4xl font-black text-blue-500">{repCount}</div>
                     </div>
 
-                    {/*energia*/}
-                    <div className="bg-gray-800 rounded-3xl p-6 flex flex-col justify-center border border-gray-700 shadow-lg h-1/3">
-                        <div className="flex justify-between items-end mb-4">
-                            <h2 className="text-gray-400 text-sm uppercase tracking-wider font-bold">Energia</h2>
-                            <span className="text-2xl font-bold text-gray-100">{energyLevel}%</span>
-                        </div>
-
-                        <div className="w-full h-8 bg-gray-900 rounded-full overflow-hidden shadow-inner border border-gray-700">
-                            <div
-                                className={`h-full transition-all duration-500 ease-out rounded-full ${
-                                    energyLevel > 50 ? 'bg-green-500' : energyLevel > 20 ? 'bg-yellow-500' : 'bg-red-500'
-                                }`}
-                                style={{ width: `${energyLevel}%` }}
-                            ></div>
-                        </div>
+                    <div className="bg-gray-800 rounded-3xl p-4 flex-1 flex flex-col justify-center border border-gray-700">
+                        <h2 className="text-gray-400 text-xs uppercase font-bold mb-2 text-center">AI Trener</h2>
+                        <p className="text-sm text-gray-300 italic text-center">
+                            {!isCalibrated ? "Czekam na kalibrację..." : "Postawa z boku wygląda świetnie. Pamiętaj o ugięciu nóg."}
+                        </p>
                     </div>
-
-                    {/*trener*/}
-                    <div className="bg-gray-800 rounded-3xl p-6 border border-gray-700 shadow-lg h-1/3 flex flex-col">
-                        <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-4 font-bold flex items-center gap-2">
-                            <span className={`w-3 h-3 rounded-full ${isCalibrated ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`}></span>
-                            Volleyball AI Coach
-                        </h2>
-                        <div className="flex-1 flex items-center">
-                            <p className="text-lg font-medium text-gray-200 italic leading-relaxed">
-                                {!isCalibrated
-                                    ? '"Wybierz ćwiczenie i skalibruj postawę..."'
-                                    : passType === 'górne'
-                                        ? '"Dobry kontakt! Pamiętaj o ułożeniu dłoni w koszyczek."'
-                                        : '"Pracuj na nogach! Nie machaj ramionami przy odbiciu dolnym."'}
-                            </p>
-                        </div>
-                    </div>
-
                 </section>
             </main>
         </div>
