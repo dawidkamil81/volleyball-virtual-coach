@@ -42,7 +42,9 @@ const Training = () => {
 
         ws.onmessage = (event) => {
             try {
+                console.log("RAW:", event.data);
                 const msg = JSON.parse(event.data);
+                console.log("MSG:", msg);
                 if (msg.status === 'error') return;
 
                 const isIdle = msg.issues.some(i => i.code === 'idle') || msg.issues.some(i => i.code === 'low_visibility');
@@ -151,6 +153,7 @@ const Training = () => {
             visibility: lm.visibility ?? 1.0
         }));
     });
+
 
     return (
         <div className="min-h-screen bg-gray-900 text-white flex flex-col p-4 md:p-6 font-sans">

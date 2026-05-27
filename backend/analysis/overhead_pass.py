@@ -30,6 +30,7 @@ class OverheadDetectionResult:
     metrics: FrontMetrics | None
     issues: list[TechniqueIssue]
     peak_valid: bool
+    phase: str = "idle"  # "idle" | "bottom" | "peak"
 
 
 def _v(lm: Landmark) -> Vec3:
@@ -133,15 +134,16 @@ def detect_overhead_pass_issues(
         )
 
     # --- IDLE (front): nadgarstki poniżej linii ramion ---
-    if metrics.wrists_y > metrics.shoulders_y:
+    elbows_ready = (
+            70 <= metrics.left_elbow_angle_deg <= 110
+            and 70 <= metrics.right_elbow_angle_deg <= 110
+    )
+    hands_at_forehead = metrics.wrists_y < metrics.forehead_y
+
+    if not (hands_at_forehead and elbows_ready):
         return OverheadDetectionResult(
             metrics=metrics,
-            issues=[
-                TechniqueIssue(
-                    code="idle",
-                    message="Czekam na kolejne odbicie",
-                )
-            ],
+            issues=[TechniqueIssue(code="idle", message="Czekam na kolejne odbicie")],
             peak_valid=False,
         )
 
@@ -233,11 +235,23 @@ def detect_overhead_pass_issues(
         hands_above_forehead
         and hands_above_eyes
         and hands_above_shoulders
-        and knees_bent_ok
+        #and knees_bent_ok
         and not has_technical_error
     )
 
-    return OverheadDetectionResult(metrics=metrics, issues=issues, peak_valid=peak_valid)
+    if metrics.wrists_y > metrics.shoulders_y:
+        phase = "idle"
+    elif peak_valid:
+        phase = "peak"
+    else:
+        phase = "bottom"
+
+    return OverheadDetectionResult(
+        metrics=metrics,
+        issues=issues,
+        peak_valid=peak_valid,
+        phase=phase,
+    )
 
 
 # Zachowanie kompatybilności wstecznej dla testów / starych wywołań

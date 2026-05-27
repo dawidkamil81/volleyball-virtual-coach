@@ -67,10 +67,9 @@ async def trainer_websocket(websocket: WebSocket) -> None:
             feedback = CoachFeedback(
                 status="ok",
                 pass_type="overhead",
-                issues=[
-                    CoachIssue(code=i.code, message=i.message) for i in detection.issues
-                ],
+                issues=[CoachIssue(code=i.code, message=i.message) for i in detection.issues],
                 peak_valid=detection.peak_valid,
+                phase=detection.phase,  # ← to
             )
             await websocket.send_json(feedback.model_dump())
     finally:

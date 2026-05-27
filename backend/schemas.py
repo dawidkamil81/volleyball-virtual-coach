@@ -45,7 +45,8 @@ class CoachIssue(BaseModel):
 
 
 class CoachFeedback(BaseModel):
-    status: str  # "ok" | "error"
-    pass_type: str  # e.g. "overhead"
+    status: str
+    pass_type: str
     issues: list[CoachIssue]
-    peak_valid: bool = False  # klatka kwalifikująca się do zaliczenia powtórzenia
+    peak_valid: bool = False
+    phase: str = "idle"  # "idle" | "bottom" | "peak"  # klatka kwalifikująca się do zaliczenia powtórzenia
