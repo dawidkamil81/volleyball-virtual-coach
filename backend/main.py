@@ -9,7 +9,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from backend.schemas import PoseData
+from backend.analysis.overhead_pass import detect_overhead_pass_issues
+from backend.schemas import CoachFeedback, CoachIssue, PoseData
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ async def trainer_websocket(websocket: WebSocket) -> None:
                 break
 
             try:
-                _pose = PoseData.model_validate_json(raw_text)
+                pose = PoseData.model_validate_json(raw_text)
             except json.JSONDecodeError as exc:
                 await websocket.send_json(
                     {
@@ -59,11 +60,18 @@ async def trainer_websocket(websocket: WebSocket) -> None:
                 )
                 continue
 
-            await websocket.send_json(
-                {
-                    "status": "ok",
-                    "message": "Received 33 landmarks",
-                }
+            detection = detect_overhead_pass_issues(
+                pose.landmarks,
+                pose.side_landmarks,
             )
+            feedback = CoachFeedback(
+                status="ok",
+                pass_type="overhead",
+                issues=[
+                    CoachIssue(code=i.code, message=i.message) for i in detection.issues
+                ],
+                peak_valid=detection.peak_valid,
+            )
+            await websocket.send_json(feedback.model_dump())
     finally:
         logger.info("WebSocket /ws/trainer handler exiting")
