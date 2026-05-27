@@ -7,6 +7,10 @@ from backend.analysis.geometry import Vec3, angle_degrees, distance
 from backend.analysis.mediapipe_pose import PoseLandmark
 from backend.schemas import Landmark
 
+import logging
+logger = logging.getLogger(__name__)
+
+
 
 @dataclass(frozen=True, slots=True)
 class FrontMetrics:
@@ -56,6 +60,8 @@ def compute_front_metrics(
     left_eye = landmarks[PoseLandmark.LEFT_EYE]
     right_eye = landmarks[PoseLandmark.RIGHT_EYE]
     nose = landmarks[PoseLandmark.NOSE]
+    
+   
 
     required = [ls, rs, le, re, lw, rw, left_eye, right_eye, nose]
     if not all(_is_visible(p, min_visibility) for p in required):
@@ -135,16 +141,25 @@ def detect_overhead_pass_issues(
 
     # --- IDLE (front): nadgarstki poniżej linii ramion ---
     elbows_ready = (
-            70 <= metrics.left_elbow_angle_deg <= 110
-            and 70 <= metrics.right_elbow_angle_deg <= 110
+            70 <= metrics.left_elbow_angle_deg <= 120
+            and 70 <= metrics.right_elbow_angle_deg <= 120
     )
-    hands_at_forehead = metrics.wrists_y < metrics.forehead_y
+    hands_at_forehead = metrics.wrists_y < metrics.shoulders_y
 
-    if not (hands_at_forehead and elbows_ready):
+    # zaraz po obliczeniu metrics, przed warunkiem idle:
+    print(
+        f"wrists_y={metrics.wrists_y:.3f} forehead_y={metrics.forehead_y:.3f} "
+        f"L_elbow={metrics.left_elbow_angle_deg:.1f} R_elbow={metrics.right_elbow_angle_deg:.1f} "
+        f"hands_at_forehead={metrics.wrists_y < metrics.shoulders_y} "
+        f"elbows_ready={70 <= metrics.left_elbow_angle_deg <= 110 and 70 <= metrics.right_elbow_angle_deg <= 110}"
+    )
+
+    if not (hands_at_forehead):
         return OverheadDetectionResult(
             metrics=metrics,
             issues=[TechniqueIssue(code="idle", message="Czekam na kolejne odbicie")],
             peak_valid=False,
+            phase="idle",
         )
 
     issues: list[TechniqueIssue] = []
@@ -191,7 +206,7 @@ def detect_overhead_pass_issues(
         )
 
     # --- Łokcie / symetria (front) ---
-    if metrics.left_elbow_angle_deg < 150 or metrics.right_elbow_angle_deg < 150:
+    if metrics.left_elbow_angle_deg < 120:
         issues.append(
             TechniqueIssue(
                 code="elbows_too_bent",
@@ -199,6 +214,7 @@ def detect_overhead_pass_issues(
             )
         )
 
+    # and metrics.right_elbow_angle_deg < 120
     if abs(metrics.left_elbow_angle_deg - metrics.right_elbow_angle_deg) > 20:
         issues.append(
             TechniqueIssue(
@@ -229,6 +245,7 @@ def detect_overhead_pass_issues(
         "elbows_too_bent",
         "arm_asymmetry",
         "bad_hand_position",
+        "side_low_visibility",
     }
     has_technical_error = any(i.code in technical_issue_codes for i in issues)
     peak_valid = (
@@ -258,6 +275,8 @@ def detect_overhead_pass_issues(
 def compute_overhead_pass_metrics(
     landmarks: list[Landmark],
     *,
-    min_visibility: float = 0.5,
+    min_visibility: float = 0.2,
 ) -> FrontMetrics | None:
     return compute_front_metrics(landmarks, min_visibility=min_visibility)
+
+
