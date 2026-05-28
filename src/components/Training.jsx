@@ -13,6 +13,8 @@ const Training = () => {
     const [repCount, setRepCount] = useState(0);
     const [energyLevel, setEnergyLevel] = useState(85);
     const [isCalibrated, setIsCalibrated] = useState(false);
+    
+    // Stan wyboru ćwiczenia
     const [passType, setPassType] = useState('górne');
 
     // Referencje dla DWÓCH kamer
@@ -25,14 +27,14 @@ const Training = () => {
     useEffect(() => {
         const getDevices = async () => {
             try {
-                // Wymuszenie zapytania o zgodę (inaczej przeglądarka ukryje nazwy kamer)
+                // Wymuszenie zapytania o zgodę
                 await navigator.mediaDevices.getUserMedia({ video: true });
                 const allDevices = await navigator.mediaDevices.enumerateDevices();
                 const videoInputDevices = allDevices.filter(device => device.kind === 'videoinput');
                 
                 setDevices(videoInputDevices);
                 
-                // Ustaw domyślne kamery, jeśli jakieś znaleziono
+                // Ustaw domyślne kamery
                 if (videoInputDevices.length > 0) {
                     setFrontCameraId(videoInputDevices[0].deviceId);
                     if (videoInputDevices.length > 1) {
@@ -46,7 +48,7 @@ const Training = () => {
         getDevices();
     }, []);
 
-    // Uruchomienie DWÓCH instancji hooka z różnymi ID kamer
+    // Uruchomienie DWÓCH instancji hooka
     useMediaPipe(videoFrontRef, canvasFrontRef, frontCameraId, (results) => {
         // Tu logika dla kamery przedniej (w przyszłości)
     });
@@ -58,14 +60,28 @@ const Training = () => {
     return (
         <div className="min-h-screen bg-gray-900 text-white flex flex-col p-4 md:p-6 font-sans">
             
-            <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+            <header className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 gap-4">
                 <div>
-                    <h1 className="text-2xl md:text-3xl font-bold text-gray-100 tracking-tight">Trening Siatkarski (Wielokamerowy)</h1>
+                    <h1 className="text-2xl md:text-3xl font-bold text-gray-100 tracking-tight">Trening Siatkarski</h1>
                     <p className="text-gray-400 text-sm mt-1">Analiza ułożenia rąk (Front) i pracy nóg (Bok)</p>
                 </div>
 
-                {/* Panele wyboru kamer */}
-                <div className="flex gap-4 bg-gray-800 p-3 rounded-xl border border-gray-700">
+                {/* Panele ustawień (Ćwiczenie i Kamery) */}
+                <div className="flex flex-wrap gap-4 bg-gray-800 p-3 rounded-xl border border-gray-700">
+                    
+                    {/* NOWE: Wybór ćwiczenia */}
+                    <div className="flex flex-col border-r border-gray-600 pr-4">
+                        <label className="text-xs text-purple-400 font-bold mb-1 uppercase">Ćwiczenie</label>
+                        <select 
+                            value={passType} 
+                            onChange={(e) => setPassType(e.target.value)}
+                            className="bg-gray-700 text-white text-sm rounded-lg border-none focus:ring-2 focus:ring-purple-500 max-w-[150px]"
+                        >
+                            <option value="górne">Odbicie Górne</option>
+                            <option value="dolne">Odbicie Dolne</option>
+                        </select>
+                    </div>
+
                     <div className="flex flex-col">
                         <label className="text-xs text-blue-400 font-bold mb-1 uppercase">Kamera: Front</label>
                         <select 
@@ -79,6 +95,7 @@ const Training = () => {
                             ))}
                         </select>
                     </div>
+                    
                     <div className="flex flex-col">
                         <label className="text-xs text-green-400 font-bold mb-1 uppercase">Kamera: Bok</label>
                         <select 
@@ -140,7 +157,7 @@ const Training = () => {
                     </div>
                 </section>
 
-                {/* SEKCJA STATYSTYK BOCZNYCH (Zwężona dla zrobienia miejsca na kamery) */}
+                {/* SEKCJA STATYSTYK BOCZNYCH */}
                 <section className="w-full lg:w-64 flex flex-row lg:flex-col gap-4">
                     <div className="bg-gray-800 rounded-3xl p-4 flex-1 flex flex-col items-center justify-center border border-gray-700">
                         <h2 className="text-gray-400 text-xs uppercase font-bold mb-2">Poprawne Odbicia</h2>
@@ -150,7 +167,11 @@ const Training = () => {
                     <div className="bg-gray-800 rounded-3xl p-4 flex-1 flex flex-col justify-center border border-gray-700">
                         <h2 className="text-gray-400 text-xs uppercase font-bold mb-2 text-center">AI Trener</h2>
                         <p className="text-sm text-gray-300 italic text-center">
-                            {!isCalibrated ? "Czekam na kalibrację..." : "Postawa z boku wygląda świetnie. Pamiętaj o ugięciu nóg."}
+                            {!isCalibrated 
+                                ? "Czekam na kalibrację..." 
+                                : passType === 'górne' 
+                                    ? "Odbicie górne: Pamiętaj o ułożeniu dłoni w 'koszyczek' nad czołem." 
+                                    : "Odbicie dolne: Pracuj na ugiętych nogach i złącz ramiona."}
                         </p>
                     </div>
                 </section>
