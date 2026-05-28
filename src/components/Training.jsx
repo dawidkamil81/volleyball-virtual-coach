@@ -29,9 +29,12 @@ const Training = () => {
     const videoSideRef = useRef(null);
     const canvasSideRef = useRef(null);
 
-    // Referencje dla WebSocketu i limitowania zapytań (Throttling)
+    // Referencje dla WebSocketu i uśredniania klatek (Smoothing)
     const socketRef = useRef(null);
-    const lastSendTime = useRef(0);
+    const cameraState = useRef({
+        front: { buffer: [], lastSendTime: 0 },
+        side: { buffer: [], lastSendTime: 0 }
+    });
 
     // 1. Pobieranie listy kamer przy starcie komponentu
     useEffect(() => {
@@ -106,27 +109,61 @@ const Training = () => {
         };
     }, [speak]); // Dodajemy 'speak' jako zależność
 
-    // 3. Funkcja wysyłająca dane do serwera API
+    // 3. Funkcja uśredniająca i wysyłająca dane do API
     const sendLandmarksToAPI = (landmarks, cameraView) => {
-        // Nie wysyłaj, jeśli trening się jeszcze nie zaczął (brak kalibracji)
         if (!isCalibrated) return;
 
-        // Limitowanie do około 10 klatek na sekundę (żeby nie zadławić serwera)
+        const state = cameraState.current[cameraView];
         const now = Date.now();
-        if (now - lastSendTime.current < 100) return; 
-        lastSendTime.current = now;
 
+        // 1. Zbieramy klatkę do bufora (worka)
+        state.buffer.push(landmarks);
+
+        // 2. Jeśli nie minęło jeszcze 100ms, przerywamy (tylko zbieramy, nie wysyłamy)
+        if (now - state.lastSendTime < 100) return;
+
+        // 3. Jeśli minęło 100ms, wyliczamy ŚREDNIĄ ze wszystkich zebranych klatek
+        const numFrames = state.buffer.length;
+        const averagedLandmarks = [];
+
+        // Przechodzimy przez wszystkie 33 punkty szkieletu
+        for (let i = 0; i < 33; i++) {
+            let sumX = 0, sumY = 0, sumZ = 0, sumVis = 0;
+
+            // Sumujemy dany punkt ze wszystkich klatek w buforze
+            for (let j = 0; j < numFrames; j++) {
+                sumX += state.buffer[j][i].x;
+                sumY += state.buffer[j][i].y;
+                sumZ += state.buffer[j][i].z;
+                sumVis += state.buffer[j][i].visibility;
+            }
+
+            // Dzielimy przez ilość klatek (Średnia Arytmetyczna)
+            averagedLandmarks.push({
+                x: sumX / numFrames,
+                y: sumY / numFrames,
+                z: sumZ / numFrames,
+                visibility: sumVis / numFrames
+            });
+        }
+
+        // 4. Budujemy paczkę z UŚREDNIONYMI danymi
         const payload = {
-            camera: cameraView,         // 'front' albo 'side'
-            exerciseType: passType,     // 'górne' albo 'dolne'
+            camera: cameraView,
+            exerciseType: passType,
             timestamp: now,
-            landmarks: landmarks        // Punkty z MediaPipe
+            framesAveraged: numFrames, // Dodatkowe info dla serwera z ilu klatek to średnia
+            landmarks: averagedLandmarks
         };
 
-        // Wysyłamy paczkę przez WebSocket
+        // 5. Wysyłamy przez WebSocket
         if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
             socketRef.current.send(JSON.stringify(payload));
         }
+
+        // 6. Resetujemy bufor i zegar dla tej konkretnej kamery, by zacząć zbierać od nowa
+        state.buffer = [];
+        state.lastSendTime = now;
     };
 
     // 4. Uruchomienie DWÓCH instancji hooka MediaPipe
