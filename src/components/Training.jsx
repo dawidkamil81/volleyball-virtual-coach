@@ -1,9 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMediaPipe } from '../hooks/useMediaPipe';
+import useSpeech from '../hooks/useSpeech';
 
 const Training = () => {
     const navigate = useNavigate();
+    const { speak } = useSpeech();
     
     // Stany dla kamer
     const [devices, setDevices] = useState([]);
@@ -17,6 +19,9 @@ const Training = () => {
     
     // Stan wyboru ćwiczenia
     const [passType, setPassType] = useState('górne');
+
+    // Stan wiadomości od trenera AI
+    const [aiMessage, setAiMessage] = useState('');
 
     // Referencje dla DWÓCH kamer
     const videoFrontRef = useRef(null);
@@ -53,13 +58,34 @@ const Training = () => {
         getDevices();
     }, []);
 
-    // 2. Łączenie z lokalnym API przez WebSocket
+    // 2. Łączenie z lokalnym API przez WebSocket i nasłuchiwanie komunikatów
     useEffect(() => {
         // Ustaw adres swojego lokalnego backendu (np. serwera Python)
         const ws = new WebSocket('ws://localhost:8000/api/trening-stream');
 
         ws.onopen = () => {
             console.log("🟢 Połączono z lokalnym serwerem API!");
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                // Odkodowujemy to, co przysłał Python
+                const response = JSON.parse(event.data);
+
+                // Sprawdzamy, czy to jest komunikat głosowy
+                if (response.type === 'feedback' && response.text) {
+                    setAiMessage(response.text); // Aktualizujemy tekst na ekranie
+                    speak(response.text);        // Odpalamy syntezator mowy!
+                }
+                
+                // Opcjonalnie: Jeśli serwer przyśle zaktualizowane powtórzenia
+                if (response.type === 'stats' && response.reps !== undefined) {
+                    setRepCount(response.reps);
+                }
+
+            } catch (err) {
+                console.error("Błąd odczytu danych z serwera:", err);
+            }
         };
 
         ws.onerror = (error) => {
@@ -78,7 +104,7 @@ const Training = () => {
                 ws.close();
             }
         };
-    }, []);
+    }, [speak]); // Dodajemy 'speak' jako zależność
 
     // 3. Funkcja wysyłająca dane do serwera API
     const sendLandmarksToAPI = (landmarks, cameraView) => {
@@ -237,9 +263,7 @@ const Training = () => {
                         <p className="text-sm text-gray-200 italic leading-relaxed">
                             {!isCalibrated 
                                 ? "Czekam na kalibrację..." 
-                                : passType === 'górne' 
-                                    ? '"Odbicie górne: Pamiętaj o ułożeniu dłoni w koszyczek nad czołem."' 
-                                    : '"Odbicie dolne: Pracuj na ugiętych nogach i złącz ramiona."'}
+                                : aiMessage || "Rozpocznij trening, analizuję postawę..."}
                         </p>
                     </div>
                 </section>
