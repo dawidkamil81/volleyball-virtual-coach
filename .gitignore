@@ -24,6 +24,7 @@ yarn-error.log*
 specyfikacja.md
 
 #venv 
+
 venv/
 .venv/
 env/

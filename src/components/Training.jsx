@@ -22,11 +22,13 @@ const Training = () => {
   const sideLandmarksRef = useRef(null);
 
   // --- MASZYNA STANÓW ---
-  const phaseRef = useRef("IDLE");
-  const errorsThisRepRef = useRef(new Set());
-
-  // NOWOŚĆ: Pamięta, czy w trakcie ruchu udało się osiągnąć pozycję docelową
-  const hitPerfectFrameRef = useRef(false);
+  const phaseRef = useRef("idle");
+  const repStateRef = useRef({
+      squatDone: false,
+      peakReached: false,
+      peakPerfect: false,
+      peakErrors: new Set(),
+  });
 
   useEffect(() => {
     const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -44,63 +46,57 @@ const Training = () => {
 
     ws.onmessage = (event) => {
       try {
-        console.log("RAW:", event.data);
         const msg = JSON.parse(event.data);
-        console.log("MSG:", msg);
         if (msg.status === "error") return;
 
-        const isIdle =
-          msg.issues.some((i) => i.code === "idle") ||
-          msg.issues.some((i) => i.code === "low_visibility");
-
-        if (isIdle) {
-          // FAZA: SPOCZYNEK (Użytkownik opuścił ręce)
-          if (phaseRef.current === "ACTIVE") {
-            phaseRef.current = "IDLE";
-
-            // Jeśli w trakcie ruchu dotarliśmy do poprawnej pozycji na szczycie
-            if (hitPerfectFrameRef.current) {
-              setCoachMessage("⭐ Świetnie! Odbicie zaliczone.");
-              setRepCount((prev) => prev + 1);
-            } else {
-              // Jeśli ruch się skończył, a idealnej pozycji nie było, pokazujemy główne błędy
-              const errs = Array.from(errorsThisRepRef.current);
-              const summary =
-                errs.length > 0
-                  ? errs.join(" | ")
-                  : "Spróbuj jeszcze raz — skup się na dłoniach nad czołem i pracy nóg.";
-              setCoachMessage(`❌ Ostatnie odbicie: ${summary}`);
-            }
-
-            // Sprzątanie przed kolejnym ruchem
-            errorsThisRepRef.current.clear();
-            hitPerfectFrameRef.current = false;
-          } else {
-            // Jesteśmy w spoczynku i NIE nadpisujemy podsumowania repa.
-            // Komunikat o błędach ma zostać na ekranie aż do kolejnego powtórzenia.
-          }
-        } else {
-          if (phaseRef.current === "IDLE") {
-            setCoachMessage("👀 Analizuję technikę...");
-            errorsThisRepRef.current.clear();
-          }
-          phaseRef.current = "ACTIVE";
-
-          if (msg.peak_valid) {
-            hitPerfectFrameRef.current = true;
-            errorsThisRepRef.current.clear();
-          } else if (msg.phase === "peak") {
-            msg.issues.forEach((issue) => {
-              if (
-                !["idle", "low_visibility", "side_low_visibility"].includes(
-                  issue.code,
-                )
-              ) {
-                errorsThisRepRef.current.add(issue.message);
-              }
-            });
-          }
+        const currentPhase = msg.phase; // "idle", "bottom", "peak"
+        
+        // Wyświetlamy błędy widoczności natychmiast
+        const visIssue = msg.issues.find((i) => i.code === "low_visibility" || i.code === "side_low_visibility");
+        if (visIssue) {
+          setCoachMessage(`❌ WIDOCZNOŚĆ: ${visIssue.message}`);
+          return;
         }
+
+        // Histereza - jeśli dotarliśmy do PEAK, nie wracamy do BOTTOM ze względu na drgania kamery.
+        // Wrócić można tylko do IDLE po opuszczeniu rąk.
+        let effectivePhase = currentPhase;
+        if (currentPhase === "idle") {
+            phaseRef.current = "idle";
+        } else if (currentPhase === "peak") {
+            phaseRef.current = "peak";
+        } else if (currentPhase === "bottom" && phaseRef.current === "peak") {
+            effectivePhase = "peak"; // Ignorujemy spadek do bottom, trzymamy peak
+        }
+
+        let message = `[FAZA: ${effectivePhase.toUpperCase()}] `;
+        
+        if (effectivePhase === "idle") {
+            message += "Opuść ręce. Czekam na uniesienie dłoni.";
+        } else if (effectivePhase === "bottom") {
+            const straightKnees = msg.issues.find(i => i.code === "knees_too_straight");
+            const straightElbows = msg.issues.find(i => i.code === "elbows_too_straight");
+            const contactTooLow = msg.issues.find(i => i.code === "contact_too_low");
+            
+            const kneesMsg = straightKnees ? "❌ KOLANA PROSTE" : "✅ KOLANA UGIĘTE";
+            const elbowsMsg = straightElbows ? "❌ RĘCE PROSTE" : "✅ RĘCE UGIĘTE";
+            
+            if (contactTooLow) {
+                 message += `${kneesMsg} | ${elbowsMsg} (DŁONIE ZA NISKO!)`;
+            } else {
+                 message += `${kneesMsg} | ${elbowsMsg}`;
+            }
+        } else if (effectivePhase === "peak") {
+            const bentKnees = msg.issues.find(i => i.code === "no_legs_drive");
+            const bentElbows = msg.issues.find(i => i.code === "elbows_too_bent");
+            
+            const kneesMsg = bentKnees ? "❌ KOLANA ZGIĘTE (wyprostuj!)" : "✅ KOLANA WYPROSTOWANE";
+            const elbowsMsg = bentElbows ? "❌ RĘCE ZGIĘTE (wyprostuj!)" : "✅ RĘCE WYPROSTOWANE";
+            
+            message += `${kneesMsg} | ${elbowsMsg}`;
+        }
+        
+        setCoachMessage(message);
       } catch (e) {
         console.error("Błąd parsowania", e);
       }
