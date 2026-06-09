@@ -24,10 +24,12 @@ const Training = () => {
   // --- MASZYNA STANÓW ---
   const phaseRef = useRef("idle");
   const repStateRef = useRef({
-      squatDone: false,
-      peakReached: false,
-      peakPerfect: false,
-      peakErrors: new Set(),
+    squatDone: false,
+    peakReached: false,
+    peakPerfect: false,
+    peakErrors: new Set(),
+    lastPeakStr: "",
+    isCounted: false,
   });
 
   useEffect(() => {
@@ -49,53 +51,118 @@ const Training = () => {
         const msg = JSON.parse(event.data);
         if (msg.status === "error") return;
 
-        const currentPhase = msg.phase; // "idle", "bottom", "peak"
-        
-        // Wyświetlamy błędy widoczności natychmiast
-        const visIssue = msg.issues.find((i) => i.code === "low_visibility" || i.code === "side_low_visibility");
+        const currentPhase = msg.phase;
+
+        const visIssue = msg.issues.find(
+          (i) =>
+            i.code === "low_visibility" || i.code === "side_low_visibility",
+        );
         if (visIssue) {
           setCoachMessage(`❌ WIDOCZNOŚĆ: ${visIssue.message}`);
           return;
         }
 
-        // Histereza - jeśli dotarliśmy do PEAK, nie wracamy do BOTTOM ze względu na drgania kamery.
-        // Wrócić można tylko do IDLE po opuszczeniu rąk.
+        // --- ZATRZASK (HISTEREZA) MASZYNY STANÓW ---
         let effectivePhase = currentPhase;
         if (currentPhase === "idle") {
-            phaseRef.current = "idle";
+          phaseRef.current = "idle";
         } else if (currentPhase === "peak") {
-            phaseRef.current = "peak";
-        } else if (currentPhase === "bottom" && phaseRef.current === "peak") {
-            effectivePhase = "peak"; // Ignorujemy spadek do bottom, trzymamy peak
+          phaseRef.current = "peak";
+        } else if (currentPhase === "bottom") {
+          if (phaseRef.current === "peak") {
+            effectivePhase = "peak";
+          } else {
+            phaseRef.current = "bottom";
+          }
+        }
+
+        // Resetowanie flagi zliczania po opuszczeniu rąk
+        if (currentPhase === "idle" || currentPhase === "bottom") {
+          repStateRef.current.isCounted = false;
+        }
+
+        // ZWIĘKSZANIE LICZNIKA POWTÓRZEŃ (Tylko raz na cykl wyrzutu)
+        if (
+          currentPhase === "peak" &&
+          msg.peak_valid &&
+          !repStateRef.current.isCounted
+        ) {
+          setRepCount((prev) => prev + 1);
+          repStateRef.current.isCounted = true;
+          // Możesz tu w przyszłości dodać odtwarzanie dźwięku "beep"!
         }
 
         let message = `[FAZA: ${effectivePhase.toUpperCase()}] `;
-        
+
         if (effectivePhase === "idle") {
-            message += "Opuść ręce. Czekam na uniesienie dłoni.";
+          message += "Opuść ręce. Czekam na uniesienie dłoni.";
         } else if (effectivePhase === "bottom") {
-            const straightKnees = msg.issues.find(i => i.code === "knees_too_straight");
-            const straightElbows = msg.issues.find(i => i.code === "elbows_too_straight");
-            const contactTooLow = msg.issues.find(i => i.code === "contact_too_low");
-            
-            const kneesMsg = straightKnees ? "❌ KOLANA PROSTE" : "✅ KOLANA UGIĘTE";
-            const elbowsMsg = straightElbows ? "❌ RĘCE PROSTE" : "✅ RĘCE UGIĘTE";
-            
-            if (contactTooLow) {
-                 message += `${kneesMsg} | ${elbowsMsg} (DŁONIE ZA NISKO!)`;
-            } else {
-                 message += `${kneesMsg} | ${elbowsMsg}`;
-            }
+          const straightKnees = msg.issues.find(
+            (i) => i.code === "knees_too_straight",
+          );
+          const straightElbows = msg.issues.find(
+            (i) => i.code === "elbows_too_straight",
+          );
+          const armsNotOverhead = msg.issues.find(
+            (i) => i.code === "arms_not_overhead",
+          );
+          const basketBroken = msg.issues.find(
+            (i) =>
+              i.code === "basket_broken" || i.code === "basket_broken_block",
+          );
+          const elbowsFlared = msg.issues.find(
+            (i) => i.code === "elbows_flared",
+          );
+          const closedFists = msg.issues.find((i) => i.code === "closed_fists");
+
+          // NOWE NASŁUCHIWANIE NA BLOKADĘ
+          const bottomBlock = msg.issues.find((i) => i.code === "bottom_block");
+
+          const kneesMsg = straightKnees
+            ? "❌ KOLANA PROSTE"
+            : "✅ KOLANA UGIĘTE";
+          const elbowsMsg = straightElbows
+            ? "❌ RĘCE PROSTE"
+            : "✅ RĘCE UGIĘTE";
+          const basketMsg = basketBroken
+            ? "❌ BRAK KOSZYCZKA"
+            : "✅ KOSZYCZEK OK";
+          const flaredMsg = elbowsFlared ? "❌ SKRZYDEŁKA" : "✅ ŁOKCIE OK";
+
+          message += `${kneesMsg} | ${elbowsMsg} | ${basketMsg} | ${flaredMsg}`;
+          if (armsNotOverhead) message += " | ❌ RĘCE ZA NISKO";
+          if (closedFists) message += " | ❌ ZACIŚNIĘTE PIĘŚCI";
+
+          // JEŚLI ZABLOKOWANO - WYŚWIETLAMY DUŻY KOMUNIKAT
+          if (bottomBlock) message += ` | ${bottomBlock.message}`;
         } else if (effectivePhase === "peak") {
-            const bentKnees = msg.issues.find(i => i.code === "no_legs_drive");
-            const bentElbows = msg.issues.find(i => i.code === "elbows_too_bent");
-            
-            const kneesMsg = bentKnees ? "❌ KOLANA ZGIĘTE (wyprostuj!)" : "✅ KOLANA WYPROSTOWANE";
-            const elbowsMsg = bentElbows ? "❌ RĘCE ZGIĘTE (wyprostuj!)" : "✅ RĘCE WYPROSTOWANE";
-            
-            message += `${kneesMsg} | ${elbowsMsg}`;
+          if (currentPhase === "peak") {
+            const bentKnees = msg.issues.find(
+              (i) => i.code === "no_legs_drive",
+            );
+            const bentElbows = msg.issues.find(
+              (i) => i.code === "elbows_too_bent",
+            );
+            // Usunięto całkowicie nasłuch i wyświetlanie komunikatu o arms_forward (zombie hands)
+
+            const kneesMsg = bentKnees
+              ? "❌ KOLANA ZGIĘTE (wyprostuj!)"
+              : "✅ KOLANA WYPROSTOWANE";
+            const elbowsMsg = bentElbows
+              ? "❌ RĘCE ZGIĘTE (wyprostuj!)"
+              : "✅ RĘCE WYPROSTOWANE";
+            const basketMsg = "✅ KOSZYCZEK OK";
+            const flaredMsg = "✅ ŁOKCIE OK";
+
+            repStateRef.current.lastPeakStr = `${kneesMsg} | ${elbowsMsg} | ${basketMsg} | ${flaredMsg}`;
+          }
+          message +=
+            repStateRef.current.lastPeakStr || "Wczytywanie wyników wyrzutu...";
         }
-        
+
+        const asymmetry = msg.issues.find((i) => i.code === "arm_asymmetry");
+        if (asymmetry) message += " | ❌ ASYMETRIA RĄK";
+
         setCoachMessage(message);
       } catch (e) {
         console.error("Błąd parsowania", e);

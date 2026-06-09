@@ -9,8 +9,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from backend.analysis.overhead_pass import detect_overhead_pass_issues
 from backend.schemas import CoachFeedback, CoachIssue, PoseData
+from backend.analysis.overhead_pass import detect_overhead_pass_issues, SessionState
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,10 @@ app.add_middleware(
 async def trainer_websocket(websocket: WebSocket) -> None:
     await websocket.accept()
     logger.info("WebSocket /ws/trainer accepted")
+    
+    # NOWOŚĆ: Tworzymy pamięć na czas trwania tego konkretnego połączenia (treningu)
+    session_state = SessionState()
+    
     try:
         while True:
             try:
@@ -60,16 +64,18 @@ async def trainer_websocket(websocket: WebSocket) -> None:
                 )
                 continue
 
+            # NOWOŚĆ: Przekazujemy naszą pamięć sesji (session_state) do silnika analitycznego
             detection = detect_overhead_pass_issues(
                 pose.landmarks,
                 pose.side_landmarks,
+                state=session_state
             )
             feedback = CoachFeedback(
                 status="ok",
                 pass_type="overhead",
                 issues=[CoachIssue(code=i.code, message=i.message) for i in detection.issues],
                 peak_valid=detection.peak_valid,
-                phase=detection.phase,  # ← to
+                phase=detection.phase,
             )
             await websocket.send_json(feedback.model_dump())
     finally:

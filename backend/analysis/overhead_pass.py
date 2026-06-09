@@ -15,8 +15,6 @@ logger = logging.getLogger(__name__)
 class FrontMetrics:
     left_elbow_angle_deg: float
     right_elbow_angle_deg: float
-    # HIP → SHOULDER → WRIST z kamery frontowej:
-    # ~170° = ręka pionowo w górę | ~90° = ręka poziomo przed siebie
     left_arm_elevation_deg: float
     right_arm_elevation_deg: float
     wrists_y: float
@@ -25,12 +23,21 @@ class FrontMetrics:
     forehead_y: float
     shoulders_y: float
     shoulder_width: float
+    # NOWE METRYKI DO KOSZYCZKA
+    elbows_dist_x: float
+    index_fingers_dist_2d: float
+    thumbs_dist_2d: float
 
 
 @dataclass(frozen=True, slots=True)
 class TechniqueIssue:
     code: str
     message: str
+
+@dataclass
+class SessionState:
+    bottom_perfect: bool = False
+    peak_reached: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +61,6 @@ def compute_front_metrics(
     *,
     min_visibility: float = 0.5,
 ) -> FrontMetrics | None:
-    """Metryki z kamery frontowej: łokcie, elewacja ramion, pozycje Y."""
     ls = landmarks[PoseLandmark.LEFT_SHOULDER]
     rs = landmarks[PoseLandmark.RIGHT_SHOULDER]
     le = landmarks[PoseLandmark.LEFT_ELBOW]
@@ -63,35 +69,41 @@ def compute_front_metrics(
     rw = landmarks[PoseLandmark.RIGHT_WRIST]
     lh = landmarks[PoseLandmark.LEFT_HIP]
     rh = landmarks[PoseLandmark.RIGHT_HIP]
-    left_eye  = landmarks[PoseLandmark.LEFT_EYE]
+    left_eye = landmarks[PoseLandmark.LEFT_EYE]
     right_eye = landmarks[PoseLandmark.RIGHT_EYE]
-    nose      = landmarks[PoseLandmark.NOSE]
+    nose = landmarks[PoseLandmark.NOSE]
+    
+    # Dodatkowe punkty dłoni
+    left_index = landmarks[PoseLandmark.LEFT_INDEX]
+    right_index = landmarks[PoseLandmark.RIGHT_INDEX]
+    left_thumb = landmarks[PoseLandmark.LEFT_THUMB]
+    right_thumb = landmarks[PoseLandmark.RIGHT_THUMB]
 
-    required = [ls, rs, le, re, lw, rw, lh, rh, left_eye, right_eye, nose]
+    required = [ls, rs, le, re, lw, rw, lh, rh, left_eye, right_eye, nose, left_index, right_index, left_thumb, right_thumb]
     if not all(_is_visible(p, min_visibility) for p in required):
         return None
 
-    # Kąt przy łokciu: BARK → ŁOKIEĆ → NADGARSTEK
-    # Mierzy czy łokieć jest wyprostowany, NIE mierzy kierunku ramienia
-    left_elbow  = angle_degrees(_v(ls), _v(le), _v(lw))
+    left_elbow = angle_degrees(_v(ls), _v(le), _v(lw))
     right_elbow = angle_degrees(_v(rs), _v(re), _v(rw))
     if not (math.isfinite(left_elbow) and math.isfinite(right_elbow)):
         return None
 
-    # Kąt elewacji ramienia: BIODRO → BARK → NADGARSTEK
-    # ~170° = ręka pionowo w górę | ~90° = ręka poziomo przed siebie
-    # To jest jedyna metryka odróżniająca "ręce w górę" od "ręce przed siebie"
-    left_elevation  = angle_degrees(_v(lh), _v(ls), _v(lw))
+    left_elevation = angle_degrees(_v(lh), _v(ls), _v(lw))
     right_elevation = angle_degrees(_v(rh), _v(rs), _v(rw))
     if not (math.isfinite(left_elevation) and math.isfinite(right_elevation)):
         return None
 
     shoulder_width = distance(_v(ls), _v(rs))
-    wrists_y    = (lw.y + rw.y) / 2.0
-    elbows_y    = (le.y + re.y) / 2.0
+    wrists_y = (lw.y + rw.y) / 2.0
+    elbows_y = (le.y + re.y) / 2.0
     shoulders_y = (ls.y + rs.y) / 2.0
-    eyes_y      = (left_eye.y + right_eye.y) / 2.0
-    forehead_y  = min(eyes_y, nose.y) - 0.025
+    eyes_y = (left_eye.y + right_eye.y) / 2.0
+    forehead_y = min(eyes_y, nose.y) - 0.025
+
+    # OBLICZENIA KOSZYCZKA
+    elbows_dist_x = abs(le.x - re.x)
+    index_dist = math.hypot(left_index.x - right_index.x, left_index.y - right_index.y)
+    thumbs_dist = math.hypot(left_thumb.x - right_thumb.x, left_thumb.y - right_thumb.y)
 
     return FrontMetrics(
         left_elbow_angle_deg=left_elbow,
@@ -104,6 +116,9 @@ def compute_front_metrics(
         forehead_y=forehead_y,
         shoulders_y=shoulders_y,
         shoulder_width=shoulder_width,
+        elbows_dist_x=elbows_dist_x,
+        index_fingers_dist_2d=index_dist,
+        thumbs_dist_2d=thumbs_dist,
     )
 
 
@@ -139,181 +154,156 @@ def detect_overhead_pass_issues(
     side_landmarks: list[Landmark] | None = None,
     *,
     min_visibility: float = 0.5,
+    state: SessionState | None = None,
 ) -> OverheadDetectionResult:
+    # Zabezpieczenie dla środowisk bezstanowych
+    if state is None:
+        state = SessionState()
+
     metrics = compute_front_metrics(landmarks, min_visibility=min_visibility)
 
     if not metrics:
         return OverheadDetectionResult(
             metrics=None,
-            issues=[TechniqueIssue(
-                code="low_visibility",
-                message="Brak pełnej widoczności kluczowych punktów ciała.",
-            )],
+            issues=[TechniqueIssue(code="low_visibility", message="Brak pełnej widoczności kluczowych punktów ciała.")],
             peak_valid=False,
+            phase="idle"
         )
 
-    # ── IDLE: nadgarstki poniżej linii barków ────────────────────────────────
-    if metrics.wrists_y >= metrics.shoulders_y:
+    # ── IDLE ─────────────────────────────────────────────────────────
+    hands_raised = metrics.wrists_y < metrics.shoulders_y
+    if not hands_raised:
+        # Twardy reset pamięci po opuszczeniu rąk
+        state.bottom_perfect = False
+        state.peak_reached = False
         return OverheadDetectionResult(
             metrics=metrics,
-            issues=[TechniqueIssue(code="idle", message="Czekam na kolejne odbicie")],
+            issues=[TechniqueIssue(code="idle", message="Czekam na uniesienie dłoni.")],
             peak_valid=False,
             phase="idle",
         )
 
     issues: list[TechniqueIssue] = []
 
-    # ── Warunki geometryczne fazy PEAK ───────────────────────────────────────
+    # ── WYLICZENIE KIERUNKU RAMION I KOSZYCZKA ───────────────────────────────
+    vertical_reach = metrics.shoulders_y - metrics.wrists_y
+    ARM_ELEVATION_MIN = 125.0
+    arms_elevated = False
 
-    # 1. Pozycja Y: dłonie wyraźnie nad czołem
-    head_height       = metrics.shoulders_y - metrics.forehead_y
-    contact_clearance = max(0.05, 0.5 * head_height)
-
-    hands_above_forehead  = metrics.wrists_y < (metrics.forehead_y - contact_clearance)
-    hands_above_eyes      = metrics.wrists_y < (metrics.eyes_y - 0.01)
-    hands_above_shoulders = metrics.wrists_y < (metrics.shoulders_y - 0.05)
-
-    # 2. Łokcie blisko głowy (nie przy boku / brodzie)
-    elbows_high_enough = metrics.elbows_y < (metrics.forehead_y + 0.08)
-
-    # 3. Wyprost łokcia: obie ręce muszą być wyprostowane (≥ 150°)
-    #    Przy zgiętych rękach (bottom/koszyczek) kąt wynosi ~80–110°
-    elbows_straight = (
-        metrics.left_elbow_angle_deg  >= 150
-        and metrics.right_elbow_angle_deg >= 150
-    )
-
-    # 4. Elewacja ramion: BIODRO → BARK → NADGARSTEK ≥ 140°
-    #    Ręce w górę ~160–175° | Ręce przed siebie ~85–100°
-    #    Kąt łokcia NIE rozróżnia tych przypadków — tu był korzeń buga
-    ARM_ELEVATION_MIN = 140.0
-    arms_elevated = (
-        metrics.left_arm_elevation_deg  >= ARM_ELEVATION_MIN
-        and metrics.right_arm_elevation_deg >= ARM_ELEVATION_MIN
-    )
-
-    is_peak_position = (
-        hands_above_forehead
-        and hands_above_eyes
-        and hands_above_shoulders
-        and elbows_high_enough
-        and elbows_straight   # wyprost łokcia jako warunek wejścia do peak
-        and arms_elevated     # kierunek ramion jako warunek wejścia do peak
-    )
-
-    # ── Feedback gdy nie ma peaku ─────────────────────────────────────────────
-    if not is_peak_position:
-        if not arms_elevated:
-            issues.append(TechniqueIssue(
-                code="arms_forward",
-                message="Wypychasz ręce przed siebie! Unieś je pionowo nad głowę.",
-            ))
+    if side_landmarks is not None:
+        side_arm_angles = _side_arm_elevation_angles_deg(side_landmarks, min_visibility=0.4)
+        if side_arm_angles:
+            arms_elevated = all(angle >= ARM_ELEVATION_MIN for angle in side_arm_angles)
         else:
-            issues.append(TechniqueIssue(
-                code="contact_too_low",
-                message="Punkt kontaktu jest zbyt nisko. Unieś dłonie nad czoło przed odbiciem.",
-            ))
+            arms_elevated = vertical_reach > (metrics.shoulder_width * 0.85)
+    else:
+        arms_elevated = vertical_reach > (metrics.shoulder_width * 0.85)
 
-    # ── Kolana (kamera boczna) ────────────────────────────────────────────────
+    max_finger_gap = metrics.shoulder_width * 0.40
+    basket_broken = (metrics.index_fingers_dist_2d > max_finger_gap or metrics.thumbs_dist_2d > max_finger_gap)
+    elbows_flared = metrics.elbows_dist_x > (metrics.shoulder_width * 1.85)
+
+    # ── SPRAWDZANIE BŁĘDÓW POZYCJI STARTOWEJ (BOTTOM) ────────────────────────
+    bottom_issues: list[TechniqueIssue] = []
+    
     if side_landmarks is not None:
         side_angles = _side_knee_angles_deg(side_landmarks, min_visibility=0.4)
-        knee_angle  = _most_bent_knee_angle(side_angles)
+        knee_angle = _most_bent_knee_angle(side_angles)
         if knee_angle is None:
-            issues.append(TechniqueIssue(
-                code="side_low_visibility",
-                message="Ustaw kamerę boczną tak, by widać było kolano, biodro i kostkę.",
-            ))
-        else:
-            if is_peak_position and knee_angle < 145:
-                issues.append(TechniqueIssue(
-                    code="no_legs_drive",
-                    message="Wyprostuj kolana przy wypchnięciu piłki (brak wyrzutu z nóg).",
-                ))
-            elif not is_peak_position and knee_angle >= 145:
-                issues.append(TechniqueIssue(
-                    code="knees_too_straight",
-                    message="Ugnij kolana pod piłką przed odbiciem.",
-                ))
+            bottom_issues.append(TechniqueIssue(code="side_low_visibility", message="Ustaw kamerę boczną tak, by widać było kolano i biodro."))
+        elif knee_angle >= 145:
+            bottom_issues.append(TechniqueIssue(code="knees_too_straight", message="Ugnij kolana pod piłką przed odbiciem."))
     else:
-        issues.append(TechniqueIssue(
-            code="side_low_visibility",
-            message="Brak danych z kamery bocznej — nie mogę ocenić pracy nóg.",
-        ))
+        bottom_issues.append(TechniqueIssue(code="side_low_visibility", message="Brak danych z kamery bocznej."))
 
-    # ── Łokcie: wyprost przy peaku, ugięcie przy bottom ──────────────────────
-    if is_peak_position:
-        if metrics.left_elbow_angle_deg < 150 or metrics.right_elbow_angle_deg < 150:
-            issues.append(TechniqueIssue(
-                code="elbows_too_bent",
-                message="Wyprostuj ręce w łokciach przy wypchnięciu piłki.",
-            ))
-    else:
-        if not arms_elevated:
-            issues.append(TechniqueIssue(
-                code="arms_not_overhead",
-                message="Unieś ręce pionowo nad głowę — nie wystarczy wyciągnąć ich przed siebie.",
-            ))
-        if metrics.left_elbow_angle_deg > 150 or metrics.right_elbow_angle_deg > 150:
-            issues.append(TechniqueIssue(
-                code="elbows_too_straight",
-                message="Ugnij łokcie przygotowując się do odbicia.",
-            ))
+    if not arms_elevated and metrics.wrists_y > metrics.forehead_y:
+        bottom_issues.append(TechniqueIssue(code="arms_not_overhead", message="Szykujesz ręce przed klatką. Przenieś dłonie nad czoło."))
+        
+    if metrics.left_elbow_angle_deg > 145 or metrics.right_elbow_angle_deg > 145:
+        bottom_issues.append(TechniqueIssue(code="elbows_too_straight", message="Ręce za proste! Ugnij łokcie przygotowując się do odbicia."))
 
-    # ── Symetria rąk ─────────────────────────────────────────────────────────
-    if abs(metrics.left_elbow_angle_deg - metrics.right_elbow_angle_deg) > 35:
-        issues.append(TechniqueIssue(
-            code="arm_asymmetry",
-            message="Utrzymaj symetrię pracy rąk — oba łokcie powinny prostować się podobnie.",
-        ))
+    if elbows_flared:
+        bottom_issues.append(TechniqueIssue(code="elbows_flared", message="Schowaj łokcie! Są rozstawione za szeroko (skrzydełka)."))
+    
+    if basket_broken:
+        bottom_issues.append(TechniqueIssue(code="basket_broken", message="Złącz kciuki i palce wskazujące w trójkąt."))
 
-    # ── Koszyczek ────────────────────────────────────────────────────────────
-    left_wrist  = landmarks[PoseLandmark.LEFT_WRIST]
+    left_wrist = landmarks[PoseLandmark.LEFT_WRIST]
     right_wrist = landmarks[PoseLandmark.RIGHT_WRIST]
-    left_index  = landmarks[PoseLandmark.LEFT_INDEX]
+    left_index = landmarks[PoseLandmark.LEFT_INDEX]
     right_index = landmarks[PoseLandmark.RIGHT_INDEX]
-
-    wrists_dist_x = abs(left_wrist.x - right_wrist.x)
-    wrists_diff_y = abs(left_wrist.y - right_wrist.y)
-
-    if wrists_dist_x > metrics.shoulder_width * 0.85 or wrists_diff_y > 0.20:
-        issues.append(TechniqueIssue(
-            code="bad_hand_position",
-            message="Zbliż dłonie do siebie w 'koszyczek' i trzymaj je równo.",
-        ))
-
+    
     if left_index.y > left_wrist.y + 0.02 or right_index.y > right_wrist.y + 0.02:
-        issues.append(TechniqueIssue(
-            code="closed_fists",
-            message="Otwórz dłonie! Palce muszą tworzyć koszyczek, nie zaciskaj pięści.",
-        ))
+        bottom_issues.append(TechniqueIssue(code="closed_fists", message="Otwórz dłonie! Nie zaciskaj pięści."))
 
-    # ── Debug (wyłączyć na produkcji: ustaw poziom logów na WARNING) ─────────
-    logger.debug(
-        "wrists_y=%.3f forehead_y=%.3f "
-        "L_elbow=%.1f R_elbow=%.1f "
-        "L_elev=%.1f R_elev=%.1f "
-        "elbows_straight=%s arms_elevated=%s is_peak=%s",
-        metrics.wrists_y, metrics.forehead_y,
-        metrics.left_elbow_angle_deg, metrics.right_elbow_angle_deg,
-        metrics.left_arm_elevation_deg, metrics.right_arm_elevation_deg,
-        elbows_straight, arms_elevated, is_peak_position,
-    )
+    # ── AKTUALIZACJA PAMIĘCI STANU (ZAMROŻENIE W TRAKCIE WYRZUTU) ────────────
+    # Gdy gracz zaczyna wyrzut (łokcie > 145), przestajemy oceniać ugięcie, 
+    # bazując na tym czy przed ułamkiem sekundy wszystko było idealnie.
+    is_initiating_push = metrics.left_elbow_angle_deg > 145 and metrics.right_elbow_angle_deg > 145
+    
+    if not is_initiating_push:
+        state.bottom_perfect = (len(bottom_issues) == 0)
 
-    # ── Przypisanie fazy ──────────────────────────────────────────────────────
-    if metrics.wrists_y > metrics.shoulders_y:
-        phase = "idle"
-    elif is_peak_position:
-        phase = "peak"
+    # ── MASZYNA STANÓW (Z TWARDĄ BLOKADĄ CAŁEGO BOTTOM) ──────────────────────
+    avg_elbow_angle = (metrics.left_elbow_angle_deg + metrics.right_elbow_angle_deg) / 2.0
+    arms_extended_angle = avg_elbow_angle > 155.0
+    arms_extended_up_2d = vertical_reach > (metrics.shoulder_width * 1.3)
+    head_height = metrics.shoulders_y - metrics.forehead_y
+    hands_high_enough = metrics.wrists_y < (metrics.forehead_y - head_height * 0.3)
+
+    is_pushing = (arms_extended_angle or arms_extended_up_2d) and hands_high_enough
+    
+    if is_pushing:
+        if not state.bottom_perfect:
+            # Gracz robi wypchnięcie, ale pozycja startowa miała błędy! Blokujemy.
+            phase = "bottom"
+            issues.append(TechniqueIssue(
+                code="bottom_block",
+                message="⛔ ZABLOKOWANO! Przyjmij i zatrzymaj idealną pozycję przed wyrzutem."
+            ))
+            issues.extend(bottom_issues)
+        else:
+            phase = "peak"
+            state.peak_reached = True
     else:
         phase = "bottom"
+        if state.peak_reached:
+            # Skończył poprzedni wyrzut, musi od nowa ułożyć idealny bottom
+            state.bottom_perfect = False
+            state.peak_reached = False
+        issues.extend(bottom_issues)
+
+    # ── OCENA TECHNIKI W FAZIE PEAK ──────────────────────────────────────────
+    if phase == "peak":
+        if not arms_elevated:
+            issues.append(TechniqueIssue(code="arms_forward", message="Wypychasz ręce przed siebie! Skieruj wyrzut bardziej w górę."))
+        
+        if metrics.left_elbow_angle_deg < 130 or metrics.right_elbow_angle_deg < 130:
+            issues.append(TechniqueIssue(code="elbows_too_bent", message="Dokończ wyprost rąk przy wypchnięciu piłki."))
+            
+        if side_landmarks is not None:
+            side_angles = _side_knee_angles_deg(side_landmarks, min_visibility=0.4)
+            knee_angle = _most_bent_knee_angle(side_angles)
+            if knee_angle is not None and knee_angle < 135:
+                issues.append(TechniqueIssue(code="no_legs_drive", message="Wyprostuj kolana przy wypchnięciu piłki."))
+
+    # 3. Symetria rąk (poza idle)
+    if abs(metrics.left_elbow_angle_deg - metrics.right_elbow_angle_deg) > 35:
+        issues.append(TechniqueIssue(code="arm_asymmetry", message="Oba łokcie powinny prostować się podobnie."))
+
+    # ── WALIDACJA POWTÓRZENIA ────────────────────────────────────────────────
+    is_valid_rep = False
+    if phase == "peak":
+        blocking_issues = [i for i in issues if i.code != "arms_forward"]
+        if not blocking_issues:
+            is_valid_rep = True
 
     return OverheadDetectionResult(
         metrics=metrics,
         issues=issues,
-        peak_valid=False,
+        peak_valid=is_valid_rep,
         phase=phase,
     )
-
 
 # Zachowanie kompatybilności wstecznej dla testów / starych wywołań
 def compute_overhead_pass_metrics(
@@ -322,3 +312,29 @@ def compute_overhead_pass_metrics(
     min_visibility: float = 0.2,
 ) -> FrontMetrics | None:
     return compute_front_metrics(landmarks, min_visibility=min_visibility)
+
+def _side_arm_elevation_angles_deg(
+    side_landmarks: list[Landmark],
+    *,
+    min_visibility: float = 0.4,
+) -> list[float]:
+    """Kąty elewacji ramion z kamery bocznej (BIODRO → BARK → NADGARSTEK).
+    Z boku idealnie widać czy ręce są w górze (~170°) czy z przodu (~90°)."""
+    arm_chains = (
+        (PoseLandmark.LEFT_HIP,  PoseLandmark.LEFT_SHOULDER,  PoseLandmark.LEFT_WRIST),
+        (PoseLandmark.RIGHT_HIP, PoseLandmark.RIGHT_SHOULDER, PoseLandmark.RIGHT_WRIST),
+    )
+    angles: list[float] = []
+    for hip_i, shoulder_i, wrist_i in arm_chains:
+        hip      = side_landmarks[hip_i]
+        shoulder = side_landmarks[shoulder_i]
+        wrist    = side_landmarks[wrist_i]
+        
+        if not all(_is_visible(p, min_visibility) for p in (hip, shoulder, wrist)):
+            continue
+            
+        ang = angle_degrees(_v(hip), _v(shoulder), _v(wrist))
+        if math.isfinite(ang):
+            angles.append(ang)
+            
+    return angles
