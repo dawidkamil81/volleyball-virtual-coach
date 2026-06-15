@@ -14,12 +14,44 @@ const Training = () => {
     const [energyLevel, setEnergyLevel] = useState(85);
     const [isCalibrated, setIsCalibrated] = useState(false);
     const [passType, setPassType] = useState('górne');
+    const [aiMessage, setAiMessage] = useState('Czekam na połączenie z serwerem...');
 
     // Referencje dla DWÓCH kamer
     const videoFrontRef = useRef(null);
     const canvasFrontRef = useRef(null);
     const videoSideRef = useRef(null);
     const canvasSideRef = useRef(null);
+    
+    // Referencja do WebSocketa
+    const socketRef = useRef(null);
+
+    // Połączenie z WebSocketem
+    useEffect(() => {
+        const ws = new WebSocket('ws://localhost:8000/ws/trainer');
+        socketRef.current = ws;
+
+        ws.onopen = () => {
+            setAiMessage('Połączono. Zaczynajmy!');
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === 'feedback' || data.type === 'state_change') {
+                setAiMessage(data.message);
+                if (data.rep_increment > 0) {
+                    setRepCount(prev => prev + data.rep_increment);
+                }
+            }
+        };
+
+        ws.onclose = () => {
+            setAiMessage('Rozłączono z serwerem.');
+        };
+
+        return () => {
+            ws.close();
+        };
+    }, []);
 
     // Pobieranie listy kamer przy starcie komponentu
     useEffect(() => {
@@ -48,11 +80,21 @@ const Training = () => {
 
     // Uruchomienie DWÓCH instancji hooka z różnymi ID kamer
     useMediaPipe(videoFrontRef, canvasFrontRef, frontCameraId, (results) => {
-        // Tu logika dla kamery przedniej (w przyszłości)
+        if (results.poseLandmarks && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+                camera: "front",
+                landmarks: results.poseLandmarks
+            }));
+        }
     });
 
     useMediaPipe(videoSideRef, canvasSideRef, sideCameraId, (results) => {
-        // Tu logika dla kamery bocznej (w przyszłości)
+        if (results.poseLandmarks && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+                camera: "side",
+                landmarks: results.poseLandmarks
+            }));
+        }
     });
 
     return (
@@ -150,7 +192,7 @@ const Training = () => {
                     <div className="bg-gray-800 rounded-3xl p-4 flex-1 flex flex-col justify-center border border-gray-700">
                         <h2 className="text-gray-400 text-xs uppercase font-bold mb-2 text-center">AI Trener</h2>
                         <p className="text-sm text-gray-300 italic text-center">
-                            {!isCalibrated ? "Czekam na kalibrację..." : "Postawa z boku wygląda świetnie. Pamiętaj o ugięciu nóg."}
+                            {!isCalibrated ? "Czekam na kalibrację..." : aiMessage}
                         </p>
                     </div>
                 </section>

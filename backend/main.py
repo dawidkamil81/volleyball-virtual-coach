@@ -11,6 +11,8 @@ from pydantic import ValidationError
 
 from backend.schemas import PoseData
 
+from backend.coach_engine import OverheadPassCoach
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Volleyball Personal Trainer", version="0.1.0")
@@ -27,6 +29,9 @@ app.add_middleware(
 async def trainer_websocket(websocket: WebSocket) -> None:
     await websocket.accept()
     logger.info("WebSocket /ws/trainer accepted")
+    
+    coach = OverheadPassCoach()
+    
     try:
         while True:
             try:
@@ -59,11 +64,11 @@ async def trainer_websocket(websocket: WebSocket) -> None:
                 )
                 continue
 
-            await websocket.send_json(
-                {
-                    "status": "ok",
-                    "message": "Received 33 landmarks",
-                }
-            )
+            # Process frame with Coach Engine
+            result = coach.process_frame(_pose.camera, _pose.landmarks)
+            
+            if result:
+                await websocket.send_json(result)
+                
     finally:
         logger.info("WebSocket /ws/trainer handler exiting")

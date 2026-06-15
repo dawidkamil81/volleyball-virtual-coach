@@ -1,10 +1,8 @@
-
 from pydantic import BaseModel, field_validator
 
 
 class Landmark(BaseModel):
-    #konkretny punkt na ciele
-
+    # konkretny punkt na ciele
     x: float
     y: float
     z: float
@@ -12,8 +10,8 @@ class Landmark(BaseModel):
 
 
 class PoseData(BaseModel):
-    #media pipe wymaga 33 punktow dla klatki
-
+    # media pipe wymaga 33 punktow dla klatki
+    camera: str  # "front" lub "side"
     landmarks: list[Landmark]
 
     @field_validator("landmarks")
