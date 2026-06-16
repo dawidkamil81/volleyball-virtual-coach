@@ -12,14 +12,18 @@ class OverheadPassCoach:
         
         self.bottom_knee_angle = 180.0
         
-        # Pamięć najniższego punktu w fazie BOTTOM
         self.lowest_wrist_y = 0.0  
         self.peak_waiting_frames = 0
         self.last_wrist_y = 0.0
         
+        self.reset_start_time = 0.0
+        self.last_evaluation_conditions = []
+        
     def process_frame(self, camera: str, landmarks):
         if camera == "front":
             self.front_landmarks = landmarks
+            # Kamera frontowa tylko aktualizuje dane, maszyna stanów jest napędzana z boku
+            return None
         elif camera == "side":
             self.side_landmarks = landmarks
             
@@ -142,27 +146,41 @@ class OverheadPassCoach:
                 shoulder_angle = calculate_angle_2d(side_hip, side_shoulder, side_elbow)
                 
                 errors = []
-                if elbow_angle < 160:
+                if elbow_angle < 145:
                     errors.append("Brak wyprostu rąk.")
-                if current_knee_angle < self.bottom_knee_angle + 20:
-                    errors.append("Odbicie z samych rąk.")
-                if shoulder_angle <= 140 or current_wrist_y >= forehead_y:
+                if current_knee_angle < self.bottom_knee_angle + 10:
+                    errors.append("Brak wyprostu kolan przy odbiciu.")
+                if shoulder_angle <= 135 or current_wrist_y >= forehead_y:
                     errors.append("Zbyt płaskie odbicie (Zombie hand).")
                     
-                self.state = "IDLE"
+                self.state = "RESET"
+                self.reset_start_time = time.time()
                 
-                # Warunki końcowe
                 final_conditions = [
-                    {"name": "Pełny wyprost rąk", "met": elbow_angle >= 160},
-                    {"name": "Dynamiczna praca nóg", "met": current_knee_angle >= self.bottom_knee_angle + 20},
-                    {"name": "Wysoki punkt kontaktu", "met": shoulder_angle > 140 and current_wrist_y < forehead_y}
+                    {"name": "Wystarczający wyprost rąk", "met": elbow_angle >= 145},
+                    {"name": "Wystarczająca praca nóg", "met": current_knee_angle >= self.bottom_knee_angle + 10},
+                    {"name": "Wysoki punkt kontaktu", "met": shoulder_angle > 135 and current_wrist_y < forehead_y}
                 ]
                 
+                self.last_evaluation_conditions = final_conditions
+                
                 if errors:
-                    return {"status": "IDLE", "type": "feedback", "message": " ".join(errors), "rep_increment": 0, "conditions": final_conditions}
+                    return {"status": "PEAK", "type": "feedback", "message": " ".join(errors), "rep_increment": 0, "conditions": final_conditions}
                 else:
-                    return {"status": "IDLE", "type": "feedback", "message": "Świetne odbicie!", "rep_increment": 1, "conditions": final_conditions}
+                    return {"status": "PEAK", "type": "feedback", "message": "Świetne odbicie!", "rep_increment": 1, "conditions": final_conditions}
                     
             return {"status": "PEAK", "type": "info", "message": "Dokończ ruch w górę...", "rep_increment": 0, "conditions": conditions}
+            
+        elif self.state == "RESET":
+            wrists_below_shoulders = s[15].y > side_shoulder.y and s[16].y > side_shoulder.y
+            
+            if wrists_below_shoulders:
+                self.state = "IDLE"
+                return {"status": "IDLE", "type": "state_change", "message": "Ręce opuszczone. Unieś nadgarstki, by rozpocząć nowe odbicie.", "rep_increment": 0, "conditions": []}
+            else:
+                # Zamrażamy ekran na 2 sekundy by gracz zobaczył ocenę (zwracamy None = brak aktualizacji na UI)
+                if time.time() - self.reset_start_time > 2.0:
+                    return {"status": "RESET", "type": "info", "message": "Opuść ręce poniżej barków, aby zresetować układ.", "rep_increment": 0, "conditions": self.last_evaluation_conditions}
+                return None
                     
         return None
