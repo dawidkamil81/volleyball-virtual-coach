@@ -19,10 +19,12 @@ class OverheadPassCoach:
         self.reset_start_time = 0.0
         self.last_evaluation_conditions = []
         
+        # NOWOŚĆ: Flaga odblokowująca ruch w górę (Zatrzask Poprawności)
+        self.bottom_position_valid = False
+        
     def process_frame(self, camera: str, landmarks):
         if camera == "front":
             self.front_landmarks = landmarks
-            # Kamera frontowa tylko aktualizuje dane, maszyna stanów jest napędzana z boku
             return None
         elif camera == "side":
             self.side_landmarks = landmarks
@@ -81,7 +83,9 @@ class OverheadPassCoach:
             
             if wrists_above_shoulders:
                 self.state = "BOTTOM"
-                self.lowest_wrist_y = current_wrist_y # Inicjalizacja
+                self.lowest_wrist_y = current_wrist_y
+                self.bottom_knee_angle = 180.0
+                self.bottom_position_valid = False # Inicjalizacja zatrzasku
                 return {"status": "BOTTOM", "type": "state_change", "message": "Zrób przysiad i ułóż koszyczek.", "rep_increment": 0, "conditions": []}
             else:
                 if self._can_send_feedback():
@@ -89,98 +93,122 @@ class OverheadPassCoach:
                 return {"status": "IDLE", "type": "info", "message": "Oczekuję na uniesienie rąk...", "rep_increment": 0, "conditions": conditions}
                 
         elif self.state == "BOTTOM":
+            # 1. Zapisujemy najniższy punkt (największe Y) rąk i największe ugięcie kolan w trakcie trwania BOTTOM
             if current_wrist_y > self.lowest_wrist_y:
                 self.lowest_wrist_y = current_wrist_y
-
+                
             knee_angle = calculate_angle_2d(side_hip, side_knee, side_ankle)
+            if knee_angle < self.bottom_knee_angle:
+                self.bottom_knee_angle = knee_angle
+
+            # 2. Obliczamy warunki postawy
             front_thumb_dist = calculate_distance_2d(f[21], f[22])
             front_wrist_dist = calculate_distance_2d(f[15], f[16])
             
-            is_knee_bent = knee_angle < 140
-            is_wrist_high = current_wrist_y < forehead_y + 0.02
+            is_knee_bent = knee_angle < 150  # Złagodzony kąt, by łatwiej było złapać start
+            is_wrist_high = current_wrist_y < forehead_y + 0.04
             is_koszyczek = front_thumb_dist < front_wrist_dist
             
+            # 3. Zatrzaskujemy bramkę - jeśli chociaż na moment pozycja była dobra, odblokowujemy pozwolenie na ruch
+            if is_knee_bent and is_wrist_high and is_koszyczek:
+                self.bottom_position_valid = True
+                
             conditions = [
-                {"name": "Kolana ugięte", "met": is_knee_bent},
-                {"name": "Nadgarstki ponad twarzą", "met": is_wrist_high},
-                {"name": "Koszyczek (złączone kciuki)", "met": is_koszyczek}
+                {"name": "Kolana ugięte", "met": is_knee_bent or self.bottom_position_valid},
+                {"name": "Nadgarstki ponad twarzą", "met": is_wrist_high or self.bottom_position_valid},
+                {"name": "Koszyczek (złączone kciuki)", "met": is_koszyczek or self.bottom_position_valid}
             ]
             
-            # Jeśli któryś warunek nie jest spełniony, trzymamy w BOTTOM
-            if not (is_knee_bent and is_wrist_high and is_koszyczek):
+            # 4. Sprawdzamy dynamikę wypchnięcia PRZED ewentualnym wyrzuceniem błędu!
+            # Jeśli ręce poszły w górę (Y zmalało o 0.035 względem najniższego punktu)
+            if current_wrist_y < self.lowest_wrist_y - 0.035: 
+                if self.bottom_position_valid:
+                    # SUKCES! Zrobili przysiad i wypychają. Przechodzimy do PEAK!
+                    self.state = "PEAK"
+                    self.peak_waiting_frames = 0
+                    self.last_wrist_y = current_wrist_y
+                    self.bottom_position_valid = False # Reset flagi
+                    return {"status": "PEAK", "type": "state_change", "message": "Wypchnij piłkę w górę!", "rep_increment": 0, "conditions": []}
+                else:
+                    # Ręce idą w górę, ale pozycja bazowa nigdy nie była dobra. Resetujemy najniższy punkt.
+                    self.lowest_wrist_y = current_wrist_y
+                    if self._can_send_feedback():
+                        return {"status": "BOTTOM", "type": "feedback", "message": "Zanim wypchniesz piłkę, musisz ugiąć kolana i zrobić koszyczek!", "rep_increment": 0, "conditions": conditions}
+            
+            # 5. Jeśli nie idą w górę, a pozycja nadal nie została zaliczona - dajemy info z czym jest problem
+            if not self.bottom_position_valid:
                 msg = "Ułóż poprawnie pozycję do odbicia."
-                if not is_knee_bent: msg = "Ugnij kolana."
-                elif not is_wrist_high: msg = "Nadgarstki wyżej, nie opuszczaj przed twarz."
-                elif not is_koszyczek: msg = "Złącz kciuki, zrób koszyczek."
+                if not is_knee_bent: msg = "Ugnij kolana (zrób lekki przysiad)."
+                elif not is_wrist_high: msg = "Podnieś nadgarstki nad czoło."
+                elif not is_koszyczek: msg = "Złącz kciuki (koszyczek)."
                 
                 if self._can_send_feedback():
                     return {"status": "BOTTOM", "type": "feedback", "message": msg, "rep_increment": 0, "conditions": conditions}
                 return {"status": "BOTTOM", "type": "info", "message": msg, "rep_increment": 0, "conditions": conditions}
                 
-            # Gdy wszystkie warunki są spełnione, sprawdzamy dynamikę wypchnięcia
-            conditions.append({"name": "Wypchnięcie rąk w górę", "met": current_wrist_y < self.lowest_wrist_y - 0.025})
-            
-            if current_wrist_y < self.lowest_wrist_y - 0.025: 
-                self.state = "PEAK"
-                self.bottom_knee_angle = knee_angle
-                self.peak_waiting_frames = 0
-                self.last_wrist_y = current_wrist_y
-                return {"status": "PEAK", "type": "state_change", "message": "Wypchnij piłkę w górę!", "rep_increment": 0, "conditions": []}
-            else:
-                return {"status": "BOTTOM", "type": "info", "message": "Zatrzymaj pozycję i wypchnij piłkę!", "rep_increment": 0, "conditions": conditions}
+            # 6. Pozycja świetna, stoimy, układ scalony i gotowy na wypchnięcie!
+            return {"status": "BOTTOM", "type": "info", "message": "Pozycja idealna! Wypchnij piłkę w górę!", "rep_increment": 0, "conditions": conditions}
             
         elif self.state == "PEAK":
-            if current_wrist_y < self.last_wrist_y:
+            if current_wrist_y < self.last_wrist_y - 0.005:
                 self.last_wrist_y = current_wrist_y
                 self.peak_waiting_frames = 0
             else:
                 self.peak_waiting_frames += 1
                 
             conditions = [
-                {"name": "Oczekiwanie na pełen wyprost", "met": self.peak_waiting_frames > 5}
+                {"name": "Zatrzymanie rąk (maksymalny wyprost)", "met": self.peak_waiting_frames > 4}
             ]
                 
-            if self.peak_waiting_frames > 5:
+            # Kiedy ręce przestaną iść w górę przez 0.5s - oceniamy technikę!
+            if self.peak_waiting_frames > 4:
                 elbow_angle = calculate_angle_2d(side_shoulder, side_elbow, side_wrist)
                 current_knee_angle = calculate_angle_2d(side_hip, side_knee, side_ankle)
                 shoulder_angle = calculate_angle_2d(side_hip, side_shoulder, side_elbow)
                 
                 errors = []
-                if elbow_angle < 145:
+                if elbow_angle < 135:
                     errors.append("Brak wyprostu rąk.")
+                
+                # Porównujemy wyprost kolan do zapisanego kąta z samego dołu przysiadu!
                 if current_knee_angle < self.bottom_knee_angle + 10:
                     errors.append("Brak wyprostu kolan przy odbiciu.")
-                if shoulder_angle <= 135 or current_wrist_y >= forehead_y:
-                    errors.append("Zbyt płaskie odbicie (Zombie hand).")
+                    
+                if shoulder_angle <= 125 or current_wrist_y >= forehead_y:
+                    errors.append("Zbyt płaskie odbicie przed siebie (Zombie hand).")
                     
                 self.state = "RESET"
                 self.reset_start_time = time.time()
                 
                 final_conditions = [
-                    {"name": "Wystarczający wyprost rąk", "met": elbow_angle >= 145},
+                    {"name": "Wystarczający wyprost rąk", "met": elbow_angle >= 135},
                     {"name": "Wystarczająca praca nóg", "met": current_knee_angle >= self.bottom_knee_angle + 10},
-                    {"name": "Wysoki punkt kontaktu", "met": shoulder_angle > 135 and current_wrist_y < forehead_y}
+                    {"name": "Wysoki punkt kontaktu", "met": shoulder_angle > 125 and current_wrist_y < forehead_y}
                 ]
                 
                 self.last_evaluation_conditions = final_conditions
                 
                 if errors:
-                    return {"status": "PEAK", "type": "feedback", "message": " ".join(errors), "rep_increment": 0, "conditions": final_conditions}
+                    return {"status": "RESET", "type": "feedback", "message": " ".join(errors), "rep_increment": 0, "conditions": final_conditions}
                 else:
-                    return {"status": "PEAK", "type": "feedback", "message": "Świetne odbicie!", "rep_increment": 1, "conditions": final_conditions}
+                    return {"status": "RESET", "type": "feedback", "message": "Świetne odbicie!", "rep_increment": 1, "conditions": final_conditions}
                     
             return {"status": "PEAK", "type": "info", "message": "Dokończ ruch w górę...", "rep_increment": 0, "conditions": conditions}
             
         elif self.state == "RESET":
+            time_elapsed = time.time() - self.reset_start_time
+            
+            # Bezwzględnie zamrażamy backend na 2 sekundy, aby powtórzenie +1 mogło nacieszyć oko!
+            if time_elapsed < 2.0:
+                return None
+                
+            # Dopiero po 2 sekundach wracamy - i tylko wtedy, gdy faktycznie opuścisz ręce!
             wrists_below_shoulders = s[15].y > side_shoulder.y and s[16].y > side_shoulder.y
             
             if wrists_below_shoulders:
                 self.state = "IDLE"
-                return {"status": "IDLE", "type": "state_change", "message": "Ręce opuszczone. Unieś nadgarstki, by rozpocząć nowe odbicie.", "rep_increment": 0, "conditions": []}
+                return {"status": "IDLE", "type": "state_change", "message": "Gotowe. Unieś nadgarstki do kolejnego odbicia.", "rep_increment": 0, "conditions": []}
             else:
-                # Zamrażamy ekran na 2 sekundy by gracz zobaczył ocenę (zwracamy None = brak aktualizacji na UI)
-                if time.time() - self.reset_start_time > 2.0:
-                    return {"status": "RESET", "type": "info", "message": "Opuść ręce poniżej barków, aby zresetować układ.", "rep_increment": 0, "conditions": self.last_evaluation_conditions}
-                return None
+                return {"status": "RESET", "type": "info", "message": "Opuść ręce poniżej barków, aby zresetować układ.", "rep_increment": 0, "conditions": self.last_evaluation_conditions}
                     
         return None
