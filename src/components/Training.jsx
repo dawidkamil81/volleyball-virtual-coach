@@ -7,7 +7,7 @@ const Training = () => {
     const navigate = useNavigate();
     const { speak } = useSpeech();
     
-    const [hasPermissions, setHasPermissions] = useState(false);
+    // Stany dla kamer
     const [devices, setDevices] = useState([]);
     const [frontCameraId, setFrontCameraId] = useState('');
     const [sideCameraId, setSideCameraId] = useState('');
@@ -15,320 +15,257 @@ const Training = () => {
     const [repCount, setRepCount] = useState(0);
     const [isCalibrated, setIsCalibrated] = useState(false);
     const [passType, setPassType] = useState('górne');
-    const [aiMessage, setAiMessage] = useState('Czekam na uprawnienia i połączenie...');
+    const [aiMessage, setAiMessage] = useState('Czekam na połączenie z serwerem...');
     const [currentPhase, setCurrentPhase] = useState('START');
     const [messageType, setMessageType] = useState('info');
     const [conditions, setConditions] = useState([]);
-    const [isVoicePaused, setIsVoicePaused] = useState(false);
 
+    // Referencje dla DWÓCH kamer
     const videoFrontRef = useRef(null);
     const canvasFrontRef = useRef(null);
     const videoSideRef = useRef(null);
     const canvasSideRef = useRef(null);
-    const socketRef = useRef(null);
-
+    
+    // Zapobieganie "jąkaniu się" trenera AI
     const lastSpokenMessage = useRef('');
-    const isSpeakingRef = useRef(false); // Blokada przesyłu klatek wideo podczas mowy lektora
-    const pendingDataRef = useRef(null); // Schowek na dane telemetryczne z serwera, gdy lektor jeszcze mówi
 
+    // Referencje dla WebSocketu (Zoptymalizowane)
+    const socketRef = useRef(null);
     const cameraState = useRef({
         front: { lastSendTime: 0 },
         side: { lastSendTime: 0 }
     });
 
+    // ==========================================
+    // INTELIGENTNY MIKROFON (Tylko w fazie IDLE)
+    // ==========================================
     useEffect(() => {
-        const requestInitialPermissions = async () => {
-            try {
-                const testStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-                testStream.getTracks().forEach(track => track.stop());
-                setHasPermissions(true);
-            } catch (err) {
-                console.error("Odrzucono uprawnienia:", err);
-                setAiMessage("Brak uprawnień do kamery lub mikrofonu!");
-            }
-        };
-        requestInitialPermissions();
-    }, []);
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) return;
 
-    // Automatyczne przypisanie kamer (obsługa 1 lub więcej urządzeń)
-    useEffect(() => {
-        if (!hasPermissions) return;
-        const getDevices = async () => {
-            try {
-                const allDevices = await navigator.mediaDevices.enumerateDevices();
-                const videoDevices = allDevices.filter(d => d.kind === 'videoinput');
-                setDevices(videoDevices);
+        let recognition = null;
+        let isIntentionallyStopped = false; // Flaga zapobiegająca restartom, gdy nie chcemy
 
-                if (videoDevices.length > 0) {
-                    setFrontCameraId(prev => prev || videoDevices[0].deviceId);
-                    setSideCameraId(prev => prev || (videoDevices[1] ? videoDevices[1].deviceId : videoDevices[0].deviceId));
+        // Uruchamiamy mikrofon TYLKO w fazach oczekiwania na ruch
+        if (currentPhase === 'START' || currentPhase === 'IDLE') {
+            recognition = new SpeechRecognition();
+            recognition.lang = 'pl-PL';
+            recognition.continuous = true;
+            recognition.interimResults = false;
+
+            recognition.onresult = (event) => {
+                const transcript = event.results[event.resultIndex][0].transcript.trim().toLowerCase();
+                if (transcript.includes('stop')) {
+                    console.log("🛑 Wypowiedziano STOP. Zamykam trening!");
+                    navigate('/');
                 }
-            } catch (err) {
-                console.error("Błąd ładowania urządzeń wideo:", err);
+            };
+
+            recognition.onend = () => {
+                if (!isIntentionallyStopped) {
+                    setTimeout(() => {
+                        try { recognition.start(); } catch (e) {}
+                    }, 1000);
+                }
+            };
+
+            try { recognition.start(); } catch (e) {}
+        }
+
+        // Gdy zmienia się faza (np. zaczynasz odbicie), całkowicie zabijamy mikrofon
+        return () => {
+            if (recognition) {
+                isIntentionallyStopped = true;
+                recognition.onend = null;
+                try { recognition.stop(); } catch (e) {}
             }
         };
-        getDevices();
-    }, [hasPermissions]);
+    }, [currentPhase, navigate]); 
+    // Zależność to currentPhase - reaguje na zmiany pozycji!
+    // ==========================================
 
-    // Aplikowanie danych treningowych z serwera po zakończeniu kwestii lektora
-    const applyServerData = (data) => {
-        if (!data) return;
-        if (data.status) {
-            setCurrentPhase(data.status);
-        }
-        if (data.type === 'feedback') {
-            setMessageType(data.rep_increment > 0 ? 'success' : 'error');
-        } else if (data.type === 'state_change') {
-            setMessageType('info');
-        }
-        if (data.session) {
-            setRepCount(data.session.total_reps);
-        }
-        if (data.conditions) {
-            setConditions(data.conditions);
-            setIsCalibrated(true);
-        }
-    };
-
-    // Pomocnicza funkcja realizująca syntezę mowy z twardym odblokowaniem awaryjnym (antylag dla Chrome)
-    const speakAndUnlock = (text, callbackOnEnd = null) => {
-        if (!text) return;
-        isSpeakingRef.current = true;
-
-        window.speechSynthesis.cancel(); // Przerwij poprzednie kwestie, by uniknąć kolejkowania
-
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = 'pl-PL';
-
-        utterance.onend = () => {
-            isSpeakingRef.current = false;
-            if (callbackOnEnd) callbackOnEnd();
-        };
-
-        utterance.onerror = () => {
-            isSpeakingRef.current = false;
-            if (callbackOnEnd) callbackOnEnd();
-        };
-
-        // ZABEZPIECZENIE AWARYJNE: Jeśli przeglądarka zgubi zdarzenie onend/onerror, odblokuj system po 3 sekundach
-        setTimeout(() => {
-            if (isSpeakingRef.current) {
-                console.warn("[Zabezpieczenie Mowy] Wymuszone awaryjne zdęcie blokady isSpeaking");
-                isSpeakingRef.current = false;
-                if (callbackOnEnd) callbackOnEnd();
-            }
-        }, 3000);
-
-        window.speechSynthesis.speak(utterance);
-    };
-
+    // Połączenie z WebSocketem
     useEffect(() => {
-        const ws = new WebSocket("ws://localhost:8000/ws/trainer");
+        const ws = new WebSocket('ws://localhost:8000/ws/trainer');
         socketRef.current = ws;
 
         ws.onopen = () => {
-            setAiMessage("Połączono z serwerem. Gotowy do treningu...");
+            setAiMessage('Połączono. Zaczynajmy!');
+            setMessageType('info');
         };
 
         ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
-
-            // 1. OBSŁUGA KOMEND GŁOSOWYCH (Zintegrowane z plikiem voice_listener.py)
-            if (data.type === "voice_command") {
-                if (data.message) {
-                    setAiMessage(data.message);
-                    speakAndUnlock(data.message); // Czytaj komunikat, ale nie blokuj wątku stanów Reacta
-                }
-
-                // AKCJA NATYCHMIASTOWA: Zmiana stanów bez czekania na lektora - odblokowuje przesył klatek z kamer
-                switch (data.event) {
-                    case "voice_pause":
-                        setIsVoicePaused(true);
-                        setMessageType("info");
-                        break;
-
-                    case "voice_start":
-                    case "voice_resume":
-                        setIsVoicePaused(false); // Odmraża kamery w handleFrontResults / handleSideResults
-                        setIsCalibrated(true);    // Zdejmuje komunikat "Czekam na start..."
-                        setCurrentPhase("START"); // Ustawia stan początkowy maszyny
-                        break;
-
-                    case "voice_reset":
-                        setRepCount(0);
-                        setConditions([]);
-                        setCurrentPhase("START");
-                        setMessageType("info");
-                        break;
-
-                    case "voice_stop":
-                        navigate('/stats');
-                        break;
-                    default:
-                        break;
-                }
-                return; // Ważne: kończymy obsługę pakietu głosowego
-            }
-
-            // 2. OBSŁUGA KOMUNIKATÓW ZWROTNYCH Z ANALIZY WIDEO (Informacje o postawie / klatkach)
-            if (data.message && data.message !== lastSpokenMessage.current) {
-                lastSpokenMessage.current = data.message;
-                setAiMessage(data.message);
-
-                pendingDataRef.current = data;
-
-                speakAndUnlock(data.message, () => {
-                    if (pendingDataRef.current) {
-                        applyServerData(pendingDataRef.current);
-                        pendingDataRef.current = null;
+            
+            if (data.status) setCurrentPhase(data.status);
+            if (data.conditions) setConditions(data.conditions);
+            else setConditions([]);
+            
+            if (data.type === 'feedback' || data.type === 'state_change' || data.type === 'info') {
+                setAiMessage(data.message); 
+                
+                // --- MOWA AI ---
+                if ((data.type === 'feedback' || data.type === 'state_change') && data.message) {
+                    if (data.message !== lastSpokenMessage.current) {
+                        speak(data.message);
+                        lastSpokenMessage.current = data.message;
                     }
-                });
-            } else {
-                // Jeśli serwer przesłał klatkę bez nowego komunikatu tekstowego do przeczytania
-                if (!isSpeakingRef.current) {
-                    applyServerData(data);
+                }
+                
+                if (data.type === 'feedback') {
+                    if (data.rep_increment > 0) {
+                        setMessageType('success');
+                        setRepCount(prev => prev + data.rep_increment);
+                    } else {
+                        setMessageType('error');
+                    }
+                } else {
+                    setMessageType('info');
                 }
             }
         };
 
-        return () => {
-            if (ws) ws.close();
-            window.speechSynthesis.cancel();
+        ws.onclose = () => {
+            setAiMessage('Rozłączono z serwerem.');
+            setMessageType('error');
         };
-    }, [navigate]);
 
-    // Zarządzanie strumieniem audio z mikrofonu (Wersja naprawiona)
+        return () => ws.close();
+    }, [speak]);
+
+    // Pobieranie listy kamer
     useEffect(() => {
-        if (!hasPermissions) return;
-        let audioContext, mediaStream, processor;
-
-        const startAudioStream = async () => {
+        const getDevices = async () => {
             try {
-                mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-                const source = audioContext.createMediaStreamSource(mediaStream);
-                processor = audioContext.createScriptProcessor(4096, 1, 1);
-                source.connect(processor);
-                processor.connect(audioContext.destination);
-
-                processor.onaudioprocess = (e) => {
-                    // --- POPRAWKA: Usunięto warunki isVoicePaused oraz isSpeakingRef.current ---
-                    // Mikrofon musi wysyłać pakiety ZAWSZE, żeby Vosk mógł wychwycić komendę "start" podczas pauzy!
-                    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
-
-                    const inputData = e.inputBuffer.getChannelData(0);
-                    const int16Buffer = new Int16Array(inputData.length);
-                    for (let i = 0; i < inputData.length; i++) {
-                        int16Buffer[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
-                    }
-                    socketRef.current.send(int16Buffer.buffer);
-                };
+                await navigator.mediaDevices.getUserMedia({ video: true });
+                const allDevices = await navigator.mediaDevices.enumerateDevices();
+                const videoInputDevices = allDevices.filter(device => device.kind === 'videoinput');
+                setDevices(videoInputDevices);
+                if (videoInputDevices.length > 0) {
+                    setFrontCameraId(videoInputDevices[0].deviceId);
+                    if (videoInputDevices.length > 1) setSideCameraId(videoInputDevices[1].deviceId);
+                }
             } catch (err) {
-                console.error("Błąd konfiguracji mikrofonu:", err);
+                console.error("Błąd dostępu do urządzeń:", err);
             }
         };
-        startAudioStream();
-        return () => {
-            if (processor) processor.disconnect();
-            if (audioContext) audioContext.close();
-            if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+        getDevices();
+    }, []);
+
+    // Funkcja BŁYSKAWICZNA wysyłająca dane (BEZ zamulających pętli)
+    const sendLandmarksToAPI = (landmarks, cameraView) => {
+        if (!isCalibrated) return;
+
+        const state = cameraState.current[cameraView];
+        const now = Date.now();
+
+        // Wysyłaj surową paczkę co 100ms
+        if (now - state.lastSendTime < 100) return;
+
+        const payload = {
+            camera: cameraView,
+            exerciseType: passType,
+            landmarks: landmarks
         };
-    }, [hasPermissions]);
 
-    // Przesył punktów MediaPipe z Kamery Frontowej
-    const handleFrontResults = (results) => {
-        // Blokada wysyłania: w trybie pauzy głosowej lub gdy lektor aktualnie strofuje/chwali użytkownika
-        if (!hasPermissions || isVoicePaused || isSpeakingRef.current || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
-        if (!results || !results.poseLandmarks || results.poseLandmarks.length === 0) return;
+        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify(payload));
+        }
 
-        const now = performance.now();
-        if (now - cameraState.current.front.lastSendTime < 100) return; // limit do ~10 FPS
-        cameraState.current.front.lastSendTime = now;
-        socketRef.current.send(JSON.stringify({ camera: "front", landmarks: results.poseLandmarks }));
+        state.lastSendTime = now;
     };
 
-    // Przesył punktów MediaPipe z Kamery Bocznej
-    const handleSideResults = (results) => {
-        if (!hasPermissions || isVoicePaused || isSpeakingRef.current || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
-        if (!results || !results.poseLandmarks || results.poseLandmarks.length === 0) return;
+    useMediaPipe(videoFrontRef, canvasFrontRef, frontCameraId, (results) => {
+        if (results.poseLandmarks) sendLandmarksToAPI(results.poseLandmarks, 'front');
+    });
 
-        const now = performance.now();
-        if (now - cameraState.current.side.lastSendTime < 100) return;
-        cameraState.current.side.lastSendTime = now;
-        socketRef.current.send(JSON.stringify({ camera: "side", landmarks: results.poseLandmarks }));
-    };
-
-    useMediaPipe(videoFrontRef, canvasFrontRef, frontCameraId, handleFrontResults);
-    useMediaPipe(videoSideRef, canvasSideRef, sideCameraId, handleSideResults);
+    useMediaPipe(videoSideRef, canvasSideRef, sideCameraId, (results) => {
+        if (results.poseLandmarks) sendLandmarksToAPI(results.poseLandmarks, 'side');
+    });
 
     return (
-        <div className="min-h-screen bg-gray-900 text-gray-100 font-sans flex flex-col">
-            <header className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between shadow-lg">
-                <div className="flex items-center space-x-3">
-                    <span className="text-2xl">🏐</span>
-                    <h1 className="text-xl font-black tracking-tight text-white uppercase">Trener AI</h1>
+        <div className="min-h-screen bg-gray-900 text-white flex flex-col p-4 md:p-6 font-sans">
+            <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+                <div>
+                    <h1 className="text-2xl md:text-3xl font-bold text-gray-100 tracking-tight">Trening Siatkarski</h1>
+                    <p className="text-gray-400 text-sm mt-1">Szybka wysyłka + Mądry Mikrofon</p>
                 </div>
-                <button onClick={() => navigate('/stats')} className="bg-red-600 hover:bg-red-500 text-white px-5 py-2 rounded-xl font-bold text-sm transition-all shadow-md">
-                    ZAKOŃCZ TRENING
-                </button>
+                <div className="flex gap-4 bg-gray-800 p-3 rounded-xl border border-gray-700">
+                    <div className="flex flex-col border-r border-gray-600 pr-4">
+                        <label className="text-xs text-purple-400 font-bold mb-1 uppercase">Ćwiczenie</label>
+                        <select 
+                            value={passType} 
+                            onChange={(e) => setPassType(e.target.value)}
+                            className="bg-gray-700 text-white text-sm rounded-lg border-none focus:ring-2 focus:ring-purple-500 max-w-[150px]"
+                        >
+                            <option value="górne">Odbicie Górne</option>
+                            <option value="dolne">Odbicie Dolne</option>
+                        </select>
+                    </div>
+                    <div className="flex flex-col">
+                        <label className="text-xs text-blue-400 font-bold mb-1 uppercase">Kamera: Front</label>
+                        <select value={frontCameraId} onChange={(e) => setFrontCameraId(e.target.value)} className="bg-gray-700 text-white text-sm rounded-lg border-none">
+                            <option value="">Wybierz kamerę...</option>
+                            {devices.map(device => <option key={device.deviceId} value={device.deviceId}>{device.label || `Kamera ${device.deviceId.substring(0,5)}`}</option>)}
+                        </select>
+                    </div>
+                    <div className="flex flex-col">
+                        <label className="text-xs text-green-400 font-bold mb-1 uppercase">Kamera: Bok</label>
+                        <select value={sideCameraId} onChange={(e) => setSideCameraId(e.target.value)} className="bg-gray-700 text-white text-sm rounded-lg border-none">
+                            <option value="">Wybierz kamerę...</option>
+                            {devices.map(device => <option key={device.deviceId} value={device.deviceId}>{device.label || `Kamera ${device.deviceId.substring(0,5)}`}</option>)}
+                        </select>
+                    </div>
+                </div>
+                <div className="flex flex-col items-center">
+                    <button onClick={() => navigate('/')} className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl font-bold w-full">ZAKOŃCZ</button>
+                    {/* Dynamiczny napis pokazujący, czy mikrofon słucha */}
+                    <span className="text-[10px] text-gray-500 mt-1 uppercase font-bold tracking-wider flex items-center gap-1">
+                        <span className={`w-2 h-2 rounded-full ${(currentPhase === 'START' || currentPhase === 'IDLE') ? 'bg-red-500 animate-pulse' : 'bg-gray-600'}`}></span>
+                        {(currentPhase === 'START' || currentPhase === 'IDLE') ? 'Powiedz "STOP"' : 'Mikrofon uśpiony'}
+                    </span>
+                </div>
             </header>
 
-            <main className="flex-1 p-6 grid grid-cols-1 xl:grid-cols-4 gap-6 overflow-hidden">
-                <section className="xl:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-6 h-full">
-                    {/* Podgląd Kamery Frontowej */}
-                    <div className="bg-gray-800 rounded-2xl border border-gray-700 overflow-hidden relative shadow-md flex flex-col">
-                        <div className="p-3 bg-gray-750 border-b border-gray-700 flex justify-between items-center">
-                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kamera Frontowa</span>
-                            <select value={frontCameraId} onChange={(e) => setFrontCameraId(e.target.value)} className="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-300">
-                                {devices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || `Kamera ${d.deviceId.slice(0,5)}`}</option>)}
-                            </select>
-                        </div>
-                        <div className="flex-1 bg-black relative flex items-center justify-center min-h-[300px]">
-                            <video ref={videoFrontRef} className="absolute inset-0 w-full h-full object-cover" playsInline muted />
-                            <canvas ref={canvasFrontRef} className="absolute inset-0 w-full h-full object-cover pointer-events-none" width={640} height={480} />
-                        </div>
+            <main className="flex-1 flex flex-col lg:flex-row gap-6">
+                <section className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-black rounded-3xl relative overflow-hidden border border-blue-500/50 min-h-[400px]">
+                        <div className="absolute top-4 left-4 z-10 bg-blue-600/80 px-3 py-1 rounded-lg text-sm font-bold">Front</div>
+                        <video ref={videoFrontRef} className="hidden" playsInline></video>
+                        <canvas ref={canvasFrontRef} className="absolute inset-0 w-full h-full object-cover z-0" width="640" height="480"></canvas>
                     </div>
-
-                    {/* Podgląd Kamery Bocznej */}
-                    <div className="bg-gray-800 rounded-2xl border border-gray-700 overflow-hidden relative shadow-md flex flex-col">
-                        <div className="p-3 bg-gray-750 border-b border-gray-700 flex justify-between items-center">
-                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
-                                Kamera Boczna {frontCameraId === sideCameraId && <span className="text-blue-400 text-[10px] normal-case font-normal">(Zduplikowana z Front)</span>}
-                            </span>
-                            <select value={sideCameraId} onChange={(e) => setSideCameraId(e.target.value)} className="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-300">
-                                {devices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || `Kamera ${d.deviceId.slice(0,5)}`}</option>)}
-                            </select>
-                        </div>
-                        <div className="flex-1 bg-black relative flex items-center justify-center min-h-[300px]">
-                            <video ref={videoSideRef} className="absolute inset-0 w-full h-full object-cover" playsInline muted />
-                            <canvas ref={canvasSideRef} className="absolute inset-0 w-full h-full object-cover pointer-events-none" width={640} height={480} />
-                        </div>
+                    <div className="bg-black rounded-3xl relative overflow-hidden border border-green-500/50 min-h-[400px]">
+                        <div className="absolute top-4 left-4 z-10 bg-green-600/80 px-3 py-1 rounded-lg text-sm font-bold">Bok</div>
+                        <video ref={videoSideRef} className="hidden" playsInline></video>
+                        <canvas ref={canvasSideRef} className="absolute inset-0 w-full h-full object-cover z-0" width="640" height="480"></canvas>
+                        {!isCalibrated && (
+                            <div className="absolute inset-0 bg-black/60 z-20 flex flex-col items-center justify-center p-4 text-center">
+                                <p className="text-green-400 font-bold mb-4">Ustaw się bokiem do kamery, aby analizować postawę.</p>
+                                <button onClick={() => setIsCalibrated(true)} className="bg-green-600 hover:bg-green-500 px-6 py-3 rounded-full font-bold shadow-[0_0_15px_rgba(34,197,94,0.4)] transition-transform hover:scale-105">START</button>
+                            </div>
+                        )}
                     </div>
                 </section>
 
-                {/* Panel boczny ze statystykami powtórzeń */}
-                <section className="flex flex-col gap-6 h-full">
-                    <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-6 shadow-lg text-center py-8">
-                        <h2 className="text-xs font-bold uppercase tracking-widest text-blue-200 mb-1">Poprawne Powtórzenia</h2>
-                        <p className="text-7xl font-black text-white">{repCount}</p>
-                        <span className="mt-2 inline-block text-[10px] font-bold px-3 py-1 bg-blue-900/40 rounded-full text-blue-100 uppercase">
-                            Tryb: {passType}
-                        </span>
+                <section className="w-full lg:w-64 flex flex-row lg:flex-col gap-4">
+                    <div className="bg-gray-800 rounded-3xl p-4 flex-1 flex flex-col items-center justify-center border border-gray-700 shadow-lg">
+                        <h2 className="text-gray-400 text-xs uppercase font-bold mb-2">Poprawne Odbicia</h2>
+                        <div className="text-5xl font-black text-blue-500 drop-shadow-[0_0_10px_rgba(59,130,246,0.3)]">{repCount}</div>
                     </div>
-
-                    <div className="bg-gray-800 rounded-2xl border border-gray-700 p-5 shadow-md flex-1 flex flex-col justify-between">
-                        <div>
-                            <div className="flex justify-between items-center mb-4">
-                                <h2 className="text-xs font-bold uppercase tracking-wider text-gray-400">Analiza na żywo</h2>
-                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${isVoicePaused ? 'bg-amber-500/20 text-amber-400' : 'bg-blue-500/20 text-blue-400'}`}>
-                                    {isVoicePaused ? "PAUZA GŁOSOWA" : currentPhase}
-                                </span>
-                            </div>
+                    <div className="bg-gray-800 rounded-3xl p-4 flex-1 flex flex-col justify-start border border-gray-700 shadow-lg">
+                        <div className="flex justify-between items-center mb-4 border-b border-gray-700 pb-2">
+                            <h2 className="text-gray-400 text-xs uppercase font-bold flex items-center gap-2">
+                                <span className={`w-2 h-2 rounded-full ${isCalibrated ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`}></span>
+                                AI Trener
+                            </h2>
+                            <span className="bg-gray-700 text-yellow-400 text-[10px] px-2 py-1 rounded-full font-bold">{currentPhase}</span>
+                        </div>
+                        <div className="flex-1 flex flex-col items-center justify-center space-y-3">
                             <p className={`text-sm text-center ${messageType === 'error' ? 'text-red-400 font-bold' : messageType === 'success' ? 'text-green-400 font-bold' : 'text-blue-400 font-medium'}`}>
                                 {!isCalibrated ? "Czekam na start..." : aiMessage}
                             </p>
-
-                            {conditions.length > 0 && !isVoicePaused && (
+                            
+                            {conditions.length > 0 && (
                                 <div className="w-full mt-2 bg-gray-900 rounded-lg p-3 border border-gray-700">
                                     <h3 className="text-[10px] text-gray-500 uppercase font-bold mb-2 tracking-wider">Warunki fazy:</h3>
                                     <ul className="space-y-1">
@@ -341,13 +278,6 @@ const Training = () => {
                                     </ul>
                                 </div>
                             )}
-                        </div>
-
-                        <div className="mt-4 pt-4 border-t border-gray-700 flex items-center justify-center space-x-2 text-xs text-gray-400">
-                            <span className={`w-2 h-2 rounded-full ${isSpeakingRef.current ? 'bg-amber-500 animate-pulse' : 'bg-green-500 animate-pulse'}`} />
-                            <span>
-                                {isSpeakingRef.current ? "Lektor mówi... (Wstrzymano wizję)" : "System gotowy, mikrofon aktywny."}
-                            </span>
                         </div>
                     </div>
                 </section>
