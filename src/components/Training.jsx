@@ -42,23 +42,57 @@ const Training = () => {
     // --- USUNIĘTO: useVoiceCommand(onStopCommand) ---
     // Nie dublujemy nasłuchu z przeglądarki. Całość idzie przez Vosk na backendzie!
 
-    // 1. Wykrywanie urządzeń wideo (Twój oryginalny kod)
-    useEffect(() => {
-        const getDevices = async () => {
-            try {
-                const allDevices = await navigator.mediaDevices.enumerateDevices();
-                const videoDevices = allDevices.filter(d => d.kind === 'videoinput');
-                setDevices(videoDevices);
+    // 1. Dodaj nowy useEffect w Training.jsx do przechwytywania audio:
+useEffect(() => {
+    let audioContext;
+    let mediaStream;
+    let processor;
 
-                if (videoDevices.length > 0) setFrontCameraId(videoDevices[0].deviceId);
-                if (videoDevices.length > 1) setSideCameraId(videoDevices[1].deviceId);
-                else if (videoDevices.length > 0) setSideCameraId(videoDevices[0].deviceId);
-            } catch (err) {
-                console.error("Błąd listowania kamer:", err);
-            }
-        };
-        getDevices();
-    }, []);
+    const startAudioListening = async () => {
+        try {
+            // Prośba o uprawnienia do mikrofonu w przeglądarce
+            mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+            audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16050 });
+            const source = audioContext.createMediaStreamSource(mediaStream);
+
+            // Tworzymy skrypt procesora audio (Vosk najlepiej radzi sobie z mono 16kHz)
+            processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+            source.connect(processor);
+            processor.connect(audioContext.destination);
+
+            processor.onaudioprocess = (e) => {
+                if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
+                if (isVoicePaused) return;
+
+                const inputData = e.inputBuffer.getChannelData(0);
+
+                // Konwersja Float32 z przeglądarki do Int16 (format wymagany przez Vosk)
+                const l = inputData.length;
+                const buf = new Int16Array(l);
+                for (let i = 0; i < l; i++) {
+                    buf[i] = Math.min(1, max(-1, inputData[i])) * 0x7FFF;
+                }
+
+                // Wysyłamy surowe audio w formacie binarnym przez ten sam WebSocket
+                socketRef.current.send(buf.buffer);
+            };
+
+        } catch (err) {
+            console.error("Brak dostępu do mikrofonu na frontendzie:", err);
+            setAiMessage("Błąd mikrofonu. Upewnij się, że dałeś uprawnienia w przeglądarce.");
+        }
+    };
+
+    startAudioListening();
+
+    return () => {
+        if (processor) processor.disconnect();
+        if (audioContext) audioContext.close();
+        if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
+    };
+}, [isVoicePaused]);
 
     // 2. Obsługa WebSocket & Logika Voice Commands z serwera
     useEffect(() => {
