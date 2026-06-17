@@ -2,10 +2,18 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMediaPipe } from '../hooks/useMediaPipe';
 import useSpeech from '../hooks/useSpeech';
+import useVoiceCommand from '../hooks/useVoiceCommand';
 
 const Training = () => {
     const navigate = useNavigate();
     const { speak } = useSpeech();
+    
+    useVoiceCommand(() => {
+        console.log("🛑 Wypowiedziano STOP. Zamykam trening!");
+        // Opcjonalnie komputer może potwierdzić głosowo:
+        // speak("Zakończono trening."); 
+        navigate('/');
+    });
     
     // Stany dla kamer
     const [devices, setDevices] = useState([]);
