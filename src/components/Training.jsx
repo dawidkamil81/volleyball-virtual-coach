@@ -8,12 +8,12 @@ const Training = () => {
     const navigate = useNavigate();
     const { speak } = useSpeech();
     
-    // Stany dla kamer
+    // Stany dla konfiguracji sprzętowej kamer przechwytujących obraz
     const [devices, setDevices] = useState([]);
     const [frontCameraId, setFrontCameraId] = useState('');
     const [sideCameraId, setSideCameraId] = useState('');
 
-    // Stany treningu i AI
+    // Stany przechowujące metryki zliczane na bieżąco przez silnik decyzyjny AI
     const [repCount, setRepCount] = useState(0);
     const [isCalibrated, setIsCalibrated] = useState(false);
     const [passType, setPassType] = useState('górne');
@@ -23,221 +23,117 @@ const Training = () => {
     const [conditions, setConditions] = useState([]);
 
     // --- NOWE STANY DO BAZY DANYCH ---
+    // Statystyki sesji niezbędne do zapisania ostatecznego podsumowania treningu
     const [totalAttempts, setTotalAttempts] = useState(0);
     const [trainingStartTime, setTrainingStartTime] = useState(null);
 
-    // Referencje dla DWÓCH kamer
+    // Referencje React HTML5 dla strumieni wideo z obu podłączonych urządzeń oraz płócien rysujących szkielet
     const videoFrontRef = useRef(null);
     const canvasFrontRef = useRef(null);
     const videoSideRef = useRef(null);
     const canvasSideRef = useRef(null);
-    
-    // Zapobieganie "jąkaniu się" trenera AI
-    const lastSpokenMessage = useRef('');
 
-    // Referencje dla WebSocketu i uśredniania klatek (Smoothing)
-    const socketRef = useRef(null);
-    const cameraState = useRef({
-        front: { buffer: [], lastSendTime: 0 },
-        side: { buffer: [], lastSendTime: 0 }
-    });
+    // Zapobieganie wielokrotnemu wywołaniu procedury zapisu sesji w bazie
+    const isSavingRef = useRef(false);
 
-
-
-    // 1. Pobieranie listy kamer przy starcie
+    // Pobranie listy dostępnych urządzeń wideo (kamery internetowe USB/wbudowane) po załadowaniu okna
     useEffect(() => {
-        const getDevices = async () => {
-            try {
-                await navigator.mediaDevices.getUserMedia({ video: true });
-                const allDevices = await navigator.mediaDevices.enumerateDevices();
-                const videoInputDevices = allDevices.filter(device => device.kind === 'videoinput');
-                setDevices(videoInputDevices);
-                
-                if (videoInputDevices.length > 0) {
-                    setFrontCameraId(videoInputDevices[0].deviceId);
-                    if (videoInputDevices.length > 1) setSideCameraId(videoInputDevices[1].deviceId);
-                }
-            } catch (err) {
-                console.error("Błąd dostępu do urządzeń:", err);
-            }
-        };
-        getDevices();
+        navigator.mediaDevices.enumerateDevices()
+            .then(deviceInfos => {
+                const videoDevices = deviceInfos.filter(d => d.kind === 'videoinput');
+                setDevices(videoDevices);
+                // Automatyczne mapowanie pierwszych dwóch znalezionych kamer
+                if (videoDevices.length >= 1) setFrontCameraId(videoDevices[0].deviceId);
+                if (videoDevices.length >= 2) setSideCameraId(videoDevices[1].deviceId);
+            })
+            .catch(err => console.error("Błąd listowania kamer:", err));
+
+        // Ustawienie znacznika czasu rozpoczęcia bieżącej sesji treningowej
+        setTrainingStartTime(new Date().toISOString());
     }, []);
 
-    // 2. Łączenie z lokalnym API przez WebSocket
-    useEffect(() => {
-        const ws = new WebSocket('ws://localhost:8000/ws/trainer');
+    // Definicja funkcji typu callback przetwarzającej wiadomości zwrotne odbierane z backendowego WebSocketu
+    const onVoiceFeedback = (data) => {
+        if (!data) return;
 
-        ws.onopen = () => {
-            console.log("🟢 Połączono z lokalnym serwerem API!");
-            setAiMessage('Połączono z serwerem. Ustaw się w kadrze!');
-        };
+        // Aktualizacja stanu fazy ruchu oraz wiadomości na ekranie
+        if (data.status) setCurrentPhase(data.status);
+        if (data.message) setAiMessage(data.message);
+        if (data.type) setMessageType(data.type);
+        if (data.conditions) setConditions(data.conditions);
 
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-
-                if (data.status) setCurrentPhase(data.status);
-                if (data.conditions) setConditions(data.conditions);
-                else setConditions([]);
-
-                // Prawidłowy odczyt "message" (nie "text") zgodnie z Pythonem
-                if (data.type === 'feedback' || data.type === 'state_change' || data.type === 'info') {
-                    setAiMessage(data.message); 
-                    
-                    // --- MOWA AI ---
-                    if ((data.type === 'feedback' || data.type === 'state_change') && data.message) {
-                        if (data.message !== lastSpokenMessage.current) {
-                            speak(data.message);
-                            lastSpokenMessage.current = data.message;
-                        }
-                    }
-                    
-                    if (data.type === 'feedback') {
-                        // LICZENIE PRÓB: Każdy "RESET" od trenera to jedna pełna próba (udana lub nie)
-                        if (data.status === 'RESET') {
-                            setTotalAttempts(prev => prev + 1);
-                        }
-
-                        if (data.rep_increment > 0) {
-                            setMessageType('success');
-                            setRepCount(prev => prev + data.rep_increment);
-                        } else {
-                            setMessageType('error');
-                        }
-                    } else {
-                        setMessageType('info');
-                    }
-                }
-            } catch (err) {
-                console.error("Błąd odczytu danych z serwera:", err);
-            }
-        };
-
-        ws.onerror = (error) => {
-            console.error("🔴 Błąd połączenia z serwerem:", error);
-        };
-
-        ws.onclose = () => {
-            console.log("⚪ Rozłączono z serwerem.");
-        };
-
-        socketRef.current = ws;
-
-        return () => {
-            if (ws.readyState === WebSocket.OPEN) ws.close();
-        };
-    }, [speak]);
-
-    // --- NOWA FUNKCJA: ZAPIS TRENINGU W BAZIE ---
-const handleFinishTraining = async () => {
-        // Jeśli nie kliknąłeś START, po prostu wyjdź bez zbędnych pytań
-        if (!trainingStartTime) {
-            navigate('/');
-            return;
+        // Obsługa komunikatów dźwiękowych (cooldown kontrolowany jest przez backend)
+        if (data.type === 'feedback' && data.message) {
+            speak(data.message);
         }
 
-        const endTime = new Date();
-        const durationSeconds = Math.floor((endTime - trainingStartTime) / 1000);
-        
-        // Obliczamy skuteczność - przy 0 prób wynik to 0
-        let accuracy = totalAttempts > 0 ? (repCount / totalAttempts) * 100 : 0;
+        // Rejestrowanie prób oraz przyrostu poprawnie wykonanych powtórzeń (Repetition Counter)
+        if (data.status === 'RESET' && data.conditions) {
+            setTotalAttempts(prev => prev + 1);
+            if (data.rep_increment > 0) {
+                setRepCount(prev => prev + data.rep_increment);
+            }
+        }
+    };
 
-        const summaryData = {
-            training_type: passType,
-            start_time: trainingStartTime.toISOString(),
-            end_time: endTime.toISOString(),
-            duration: durationSeconds,
+    // Custom hook integrujący MediaPipe (detekcja punktów ciała) z WebSocketem przesyłającym dane w czasie rzeczywistym
+    const { isConnected, errorMsg } = useMediaPipe(
+        frontCameraId,
+        sideCameraId,
+        videoFrontRef,
+        canvasFrontRef,
+        videoSideRef,
+        canvasSideRef,
+        onVoiceFeedback
+    );
+
+    // Funkcja wywoływana przy chęci zakończenia i zapisu treningu przez użytkownika
+    const handleStopTraining = async () => {
+        if (isSavingRef.current) return;
+        isSavingRef.current = true;
+
+        const endTime = new Date().toISOString();
+        const durationSec = trainingStartTime ? Math.floor((new Date() - new Date(trainingStartTime)) / 1000) : 0;
+
+        // Obliczanie procentowej celności (zapobieganie dzieleniu przez zero)
+        const accuracy = totalAttempts > 0 ? Math.round((repCount / totalAttempts) * 100) : 0;
+
+        const summaryPayload = {
+            training_type: `Odbicia ${passType}`,
+            start_time: trainingStartTime || endTime,
+            end_time: endTime,
+            duration: durationSec,
             successful_reps: repCount,
             total_attempts: totalAttempts,
-            overall_accuracy: parseFloat(accuracy.toFixed(2))
+            overall_accuracy: accuracy
         };
 
         try {
-            // Dodajemy await, aby upewnić się, że serwer przyjął dane przed nawigacją
-            const response = await fetch('http://localhost:8000/api/training/save', {
+            // Przesłanie paczki podsumowującej metodą POST do API bazodanowego
+            const res = await fetch('http://localhost:8000/api/training/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(summaryData)
+                body: JSON.stringify(summaryPayload)
             });
-            
-            if (response.ok) {
-                console.log("✅ Trening pomyślnie zapisany!");
-            } else {
-                console.error("❌ Serwer zwrócił błąd zapisu.");
-            }
-        } catch (error) {
-            console.error("❌ Błąd połączenia z API (sprawdź czy serwer działa):", error);
+            const data = await res.json();
+            console.log("Zapisano trening:", data);
+        } catch (e) {
+            console.error("Błąd podczas zapisu treningu:", e);
+        } finally {
+            // Bezwarunkowe odesłanie użytkownika do pulpitu głównego po zakończeniu operacji
+            navigate('/');
         }
-
-        // Niezależnie od wyniku zapisu, wychodzimy do dashboardu
-        navigate('/');
     };
 
-        //mikrofon
-    const recognitionRef = useRef(null);
-
-    // --- MIKROFON (TYLKO JEDNA DEFINICJA) ---
-    useVoiceCommand(handleFinishTraining, speak);
-
-    // 3. Funkcja uśredniająca klatki (stary, płynny mechanizm)
-    const sendLandmarksToAPI = (landmarks, cameraView) => {
-        if (!isCalibrated) return;
-
-        const state = cameraState.current[cameraView];
-        const now = Date.now();
-
-        state.buffer.push(landmarks);
-
-        if (now - state.lastSendTime < 100) return;
-
-        const numFrames = state.buffer.length;
-        const averagedLandmarks = [];
-
-        for (let i = 0; i < 33; i++) {
-            let sumX = 0, sumY = 0, sumZ = 0, sumVis = 0;
-            for (let j = 0; j < numFrames; j++) {
-                sumX += state.buffer[j][i].x;
-                sumY += state.buffer[j][i].y;
-                sumZ += state.buffer[j][i].z;
-                sumVis += state.buffer[j][i].visibility;
-            }
-            averagedLandmarks.push({
-                x: sumX / numFrames,
-                y: sumY / numFrames,
-                z: sumZ / numFrames,
-                visibility: sumVis / numFrames
-            });
-        }
-
-        const payload = {
-            camera: cameraView,
-            exerciseType: passType,
-            timestamp: now,
-            framesAveraged: numFrames,
-            landmarks: averagedLandmarks
-        };
-
-        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-            socketRef.current.send(JSON.stringify(payload));
-        }
-
-        state.buffer = [];
-        state.lastSendTime = now;
-    };
-
-    // 4. Uruchomienie DWÓCH instancji hooka MediaPipe
-    useMediaPipe(videoFrontRef, canvasFrontRef, frontCameraId, (results) => {
-        if (results.poseLandmarks) sendLandmarksToAPI(results.poseLandmarks, 'front');
-    });
-
-    useMediaPipe(videoSideRef, canvasSideRef, sideCameraId, (results) => {
-        if (results.poseLandmarks) sendLandmarksToAPI(results.poseLandmarks, 'side');
+    // Integracja rozpoznawania komend głosowych użytkownika (np. słowo "stop" kończy sesję)
+    useVoiceCommand({
+        'stop': handleStopTraining,
+        'zakończ': handleStopTraining,
     });
 
     return (
         <div className="min-h-screen bg-gray-900 text-white flex flex-col p-4 md:p-6 font-sans">
-            
+
             {/* --- NAGŁÓWEK --- */}
             <header className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 gap-4">
                 <div>
@@ -248,8 +144,8 @@ const handleFinishTraining = async () => {
                 <div className="flex flex-wrap gap-4 bg-gray-800 p-3 rounded-xl border border-gray-700">
                     <div className="flex flex-col border-r border-gray-600 pr-4">
                         <label className="text-xs text-purple-400 font-bold mb-1 uppercase">Ćwiczenie</label>
-                        <select 
-                            value={passType} 
+                        <select
+                            value={passType}
                             onChange={(e) => setPassType(e.target.value)}
                             className="bg-gray-700 text-white text-sm rounded-lg border-none focus:ring-2 focus:ring-purple-500 max-w-[150px]"
                         >
@@ -265,7 +161,7 @@ const handleFinishTraining = async () => {
                             {devices.map(device => <option key={device.deviceId} value={device.deviceId}>{device.label || `Kamera ${device.deviceId.substring(0,5)}`}</option>)}
                         </select>
                     </div>
-                    
+
                     <div className="flex flex-col">
                         <label className="text-xs text-green-400 font-bold mb-1 uppercase">Kamera: Bok</label>
                         <select value={sideCameraId} onChange={(e) => setSideCameraId(e.target.value)} className="bg-gray-700 text-white text-sm rounded-lg border-none">
@@ -286,7 +182,7 @@ const handleFinishTraining = async () => {
                         <div className="absolute top-4 left-4 z-10 bg-blue-600/80 px-3 py-1 rounded-lg text-sm font-bold">Front</div>
                         <video ref={videoFrontRef} className="hidden" playsInline></video>
                         <canvas ref={canvasFrontRef} className="absolute inset-0 w-full h-full object-cover z-0" width="640" height="480"></canvas>
-                        
+
                         {!isCalibrated && (
                             <div className="absolute inset-0 bg-black/60 z-20 flex items-center justify-center">
                                 <p className="text-blue-400 font-bold text-center px-4">
@@ -336,8 +232,8 @@ const handleFinishTraining = async () => {
 
                         <div className="flex-1 flex flex-col items-center justify-center space-y-3">
                             <p className={`text-sm text-center ${messageType === 'error' ? 'text-red-400 font-bold' : messageType === 'success' ? 'text-green-400 font-bold' : 'text-blue-400 font-medium'}`}>
-                                {!isCalibrated 
-                                    ? "Czekam na kalibrację..." 
+                                {!isCalibrated
+                                    ? "Czekam na kalibrację..."
                                     : aiMessage || "Rozpocznij trening, analizuję postawę..."}
                             </p>
 

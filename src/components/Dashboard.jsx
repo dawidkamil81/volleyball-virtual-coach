@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 
 const Dashboard = () => {
   const navigate = useNavigate();
+
+  // Stan agregujący globalne wyliczenia statystyczne ze wszystkich zapisanych treningów
   const [stats, setStats] = useState({
     totalTrainings: 0,
     avgAccuracy: 0,
@@ -10,21 +12,21 @@ const Dashboard = () => {
     totalTimeMinutes: 0
   });
 
+  // Odpytanie API o statystyki ogólne od razu przy wejściu użytkownika na stronę główną
   useEffect(() => {
-    // Pobieranie danych z bazy przy wejściu na stronę
     fetch('http://localhost:8000/api/training/stats')
       .then(res => res.json())
       .then(response => {
         if (response.status === 'success' && response.data.length > 0) {
           const trainings = response.data;
           const count = trainings.length;
-          
-          // Sumowanie całkowitego czasu w sekundach
+
+          // Redukcja (sumowanie) całkowitej liczby sekund spędzonych na ćwiczeniach
           const totalSecs = trainings.reduce((acc, curr) => acc + (curr.Duration || 0), 0);
-          
-          // Obliczanie średniej celności
+
+          // Redukcja i wyciągnięcie średniej wartości celności (Overall Accuracy)
           const totalAcc = trainings.reduce((acc, curr) => acc + (curr.OverallAccuracy || 0), 0);
-          
+
           setStats({
             totalTrainings: count,
             avgAccuracy: Math.round(totalAcc / count),

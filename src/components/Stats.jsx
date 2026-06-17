@@ -2,14 +2,21 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 const Stats = () => {
+  // Hook służący do programistycznego nawigowania pomiędzy podstronami (np. powrót do Dashboardu)
   const navigate = useNavigate();
+
+  // Stan przechowujący tablicę z historią sesji treningowych pobraną z API
   const [history, setHistory] = useState([]);
+
+  // Stan flagi ładowania, kontrolujący wyświetlanie wskaźnika "Ładowanie..." podczas zapytania HTTP
   const [isLoading, setIsLoading] = useState(true);
 
+  // Efekt uboczny wywoływany raz przy montowaniu komponentu – pobiera dane historyczne z backendu
   useEffect(() => {
     fetch('http://localhost:8000/api/training/stats')
       .then(res => res.json())
       .then(response => {
+        // Jeśli backend potwierdził sukces, zapisujemy dane do stanu history
         if (response.status === 'success') {
           setHistory(response.data);
         }
@@ -25,15 +32,14 @@ const Stats = () => {
   const formatDate = (isoString) => {
     if (!isoString) return "-";
     const date = new Date(isoString);
-    return date.toLocaleString('pl-PL', { 
-      day: 'numeric', month: 'short', year: 'numeric', 
-      hour: '2-digit', minute: '2-digit' 
-    });
+    return date.toLocaleString('pl-PL', {
+      day: 'numeric', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit' \n    });
   };
 
   return (
     <div className="min-h-screen bg-gray-50 p-6 md:p-10 font-sans">
-      
+
       <header className="mb-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight">
@@ -43,7 +49,7 @@ const Stats = () => {
             Lista wszystkich Twoich sesji z trenerem AI.
           </p>
         </div>
-        <button 
+        <button
           onClick={() => navigate('/')}
           className="bg-white border border-gray-200 text-gray-700 hover:bg-gray-100 font-semibold py-2 px-5 rounded-xl shadow-sm transition-all"
         >
@@ -89,8 +95,8 @@ const Stats = () => {
                       {Math.floor((session.Duration || 0) / 60)} min {(session.Duration || 0) % 60} sek
                     </td>
                     <td className="p-5 font-bold text-gray-700">
-                      <span className="text-green-600">{session.SuccessfulReps}</span> 
-                      <span className="text-gray-400 font-normal mx-1">/</span> 
+                      <span className="text-green-600">{session.SuccessfulReps}</span>
+                      <span className="text-gray-400 font-normal mx-1">/</span>
                       {session.TotalAttempts}
                     </td>
                     <td className="p-5">
@@ -100,8 +106,8 @@ const Stats = () => {
                         </span>
                         {/* Wizualny pasek skuteczności */}
                         <div className="w-24 bg-gray-200 rounded-full h-2 hidden sm:block">
-                          <div 
-                            className={`h-2 rounded-full ${session.OverallAccuracy >= 80 ? 'bg-green-500' : session.OverallAccuracy >= 50 ? 'bg-orange-400' : 'bg-red-500'}`} 
+                          <div
+                            className={`h-2 rounded-full ${session.OverallAccuracy >= 80 ? 'bg-green-500' : session.OverallAccuracy >= 50 ? 'bg-orange-400' : 'bg-red-500'}`}
                             style={{ width: `${session.OverallAccuracy}%` }}
                           ></div>
                         </div>

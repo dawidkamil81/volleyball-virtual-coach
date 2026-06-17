@@ -4,18 +4,22 @@ import useSpeech from '../hooks/useSpeech';
 
 const TestSpeech = () => {
   const navigate = useNavigate();
+
+  // Destrukturyzacja funkcji speak z dedykowanego custom hooka obsługującego syntezę mowy Web Speech API
   const { speak } = useSpeech();
+
+  // Stan przechowujący tekst ostatniej testowanej lub odebranej komendy głosowej
   const [ostatniaKomenda, setOstatniaKomenda] = useState("Czekam na analizę...");
 
   // Ta funkcja symuluje to, co docelowo będzie przychodzić z serwera (np. z WebSocketu)
   const symulujOdbiorZSerwera = (komendaTekstowa) => {
     setOstatniaKomenda(komendaTekstowa);
-    speak(komendaTekstowa); // Odpalamy czytanie na głos!
+    speak(komendaTekstowa); // Odpalamy czytanie na głos za pomocą syntezatora
   };
 
   return (
     <div className="min-h-screen bg-gray-900 p-6 flex flex-col font-sans">
-        <button 
+        <button
           onClick={() => navigate('/')}
           className="text-white bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-medium transition-all"
         >

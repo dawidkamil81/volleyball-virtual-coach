@@ -2,7 +2,7 @@ from pydantic import BaseModel, field_validator
 
 
 class Landmark(BaseModel):
-    # konkretny punkt na ciele
+    # Konkretny trójwymiarowy punkt na ciele (zwracany m.in. przez MediaPipe) wraz ze współczynnikiem pewności detekcji
     x: float
     y: float
     z: float
@@ -10,10 +10,11 @@ class Landmark(BaseModel):
 
 
 class PoseData(BaseModel):
-    # media pipe wymaga 33 punktow dla klatki
-    camera: str  # "front" lub "side"
+    # MediaPipe wymaga dokładnie 33 punktów do poprawnej reprezentacji sylwetki w danej klatce wideo
+    camera: str  # "front" (widok z przodu) lub "side" (widok z profilu)
     landmarks: list[Landmark]
 
+    # Walidator sprawdzający, czy lista punktów przesłana z frontendu posiada wymaganą długość
     @field_validator("landmarks")
     @classmethod
     def exactly_33_landmarks(cls, value: list[Landmark]) -> list[Landmark]:
@@ -23,6 +24,7 @@ class PoseData(BaseModel):
         return value
 
 class TrainingSummary(BaseModel):
+    # Struktura danych przesyłana na koniec sesji treningowej w celu archiwizacji w bazie danych
     training_type: str
     start_time: str
     end_time: str
