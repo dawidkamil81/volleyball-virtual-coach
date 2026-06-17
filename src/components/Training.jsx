@@ -7,7 +7,7 @@ const Training = () => {
     const navigate = useNavigate();
     const { speak } = useSpeech();
     
-    // Stany dla urządzeń
+    const [hasPermissions, setHasPermissions] = useState(false);
     const [devices, setDevices] = useState([]);
     const [frontCameraId, setFrontCameraId] = useState('');
     const [sideCameraId, setSideCameraId] = useState('');
@@ -15,15 +15,12 @@ const Training = () => {
     const [repCount, setRepCount] = useState(0);
     const [isCalibrated, setIsCalibrated] = useState(false);
     const [passType, setPassType] = useState('górne');
-    const [aiMessage, setAiMessage] = useState('Czekam na połączenie z serwerem...');
+    const [aiMessage, setAiMessage] = useState('Czekam na uprawnienia i połączenie...');
     const [currentPhase, setCurrentPhase] = useState('START');
     const [messageType, setMessageType] = useState('info');
     const [conditions, setConditions] = useState([]);
-
-    // Obsługa pauzy wywołanej głosowo
     const [isVoicePaused, setIsVoicePaused] = useState(false);
 
-    // Referencje kamer i WebSocketu
     const videoFrontRef = useRef(null);
     const canvasFrontRef = useRef(null);
     const videoSideRef = useRef(null);
@@ -36,166 +33,134 @@ const Training = () => {
         side: { lastSendTime: 0 }
     });
 
-    // 1. Ładowanie listy dostępnych kamer
     useEffect(() => {
+        const requestInitialPermissions = async () => {
+            try {
+                const testStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+                testStream.getTracks().forEach(track => track.stop());
+                setHasPermissions(true);
+            } catch (err) {
+                console.error("Odrzucono uprawnienia:", err);
+                setAiMessage("Brak uprawnień do kamery lub mikrofonu!");
+            }
+        };
+        requestInitialPermissions();
+    }, []);
+
+    useEffect(() => {
+        if (!hasPermissions) return;
         const getDevices = async () => {
             try {
                 const allDevices = await navigator.mediaDevices.enumerateDevices();
                 const videoDevices = allDevices.filter(d => d.kind === 'videoinput');
                 setDevices(videoDevices);
 
-                if (videoDevices.length > 0) setFrontCameraId(videoDevices[0].deviceId);
-                if (videoDevices.length > 1) setSideCameraId(videoDevices[1].deviceId);
-                else if (videoDevices.length > 0) setSideCameraId(videoDevices[0].deviceId);
+                if (videoDevices.length > 0) {
+                    setFrontCameraId(prev => prev || videoDevices[0].deviceId);
+                    setSideCameraId(prev => prev || (videoDevices[1] ? videoDevices[1].deviceId : videoDevices[0].deviceId));
+                }
             } catch (err) {
                 console.error("Błąd ładowania urządzeń wideo:", err);
             }
         };
         getDevices();
-    }, []);
+    }, [hasPermissions]);
 
-    // 2. Obsługa połączenia WebSocket sieciowego i komunikatów z serwera
     useEffect(() => {
         const ws = new WebSocket("ws://localhost:8000/ws/trainer");
         socketRef.current = ws;
 
         ws.onopen = () => {
-            console.log("Połączono z serwerem w drugim pokoju.");
-            setAiMessage("Połączono. Serwer gotowy, powiedz coś do mikrofonu...");
+            setAiMessage("Połączono z serwerem. Gotowy do treningu...");
         };
 
         ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
 
-            // Obsługa zdarzeń komend głosowych odesłanych przez serwer
             if (data.type === "voice_command") {
                 if (data.message) {
                     speak(data.message);
                     setAiMessage(data.message);
                 }
-
                 switch (data.event) {
-                    case "voice_pause":
-                        setIsVoicePaused(true);
-                        setMessageType("info");
-                        break;
-                    case "voice_resume":
-                        setIsVoicePaused(false);
-                        break;
-                    case "voice_reset":
-                        setRepCount(0);
-                        setConditions([]);
-                        setCurrentPhase("START");
-                        setMessageType("info");
-                        break;
-                    case "voice_stop":
-                        navigate('/stats');
-                        break;
-                    default:
-                        break;
+                    case "voice_pause": setIsVoicePaused(true); setMessageType("info"); break;
+                    case "voice_resume": setIsVoicePaused(false); break;
+                    case "voice_reset": setRepCount(0); setConditions([]); setCurrentPhase("START"); setMessageType("info"); break;
+                    case "voice_stop": navigate('/stats'); break;
+                    default: break;
                 }
                 return;
             }
 
-            // Standardowy feedback z silnika AI
             if (data.status) {
                 setCurrentPhase(data.status);
-
                 if (data.message && data.message !== lastSpokenMessage.current) {
                     setAiMessage(data.message);
                     speak(data.message);
                     lastSpokenMessage.current = data.message;
                 }
-
                 if (data.type === 'feedback') {
                     setMessageType(data.rep_increment > 0 ? 'success' : 'error');
                 } else if (data.type === 'state_change') {
                     setMessageType('info');
                 }
-
-                if (data.session) {
-                    setRepCount(data.session.total_reps);
-                }
-
-                if (data.conditions) {
-                    setConditions(data.conditions);
-                    setIsCalibrated(true);
-                }
+                if (data.session) setRepCount(data.session.total_reps);
+                if (data.conditions) { setConditions(data.conditions); setIsCalibrated(true); }
             }
         };
 
-        return () => {
-            if (ws) ws.close();
-        };
+        return () => { if (ws) ws.close(); };
     }, [navigate, speak]);
 
-    // 3. STRUMIENIOWANIE MIKROFONU PRZEZ SIEĆ DO SERWERA
     useEffect(() => {
-        let audioContext;
-        let mediaStream;
-        let processor;
+        if (!hasPermissions) return;
+        let audioContext, mediaStream, processor;
 
         const startAudioStream = async () => {
             try {
-                // Zapytanie o mikrofon na urządzeniu treningowym (front)
                 mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-                // Konfiguracja kontekstu na próbkowanie dopasowane pod Vosk (16kHz)
                 audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
                 const source = audioContext.createMediaStreamSource(mediaStream);
-
-                // Procesor bufora dźwiękowego
                 processor = audioContext.createScriptProcessor(4096, 1, 1);
                 source.connect(processor);
                 processor.connect(audioContext.destination);
 
                 processor.onaudioprocess = (e) => {
-                    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
-                    if (isVoicePaused) return;
-
+                    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN || isVoicePaused) return;
                     const inputData = e.inputBuffer.getChannelData(0);
-                    const bufferLength = inputData.length;
-                    const int16Buffer = new Int16Array(bufferLength);
-
-                    // Konwersja formatu Float32 przeglądarki do Int16 wymagany przez serwer
-                    for (let i = 0; i < bufferLength; i++) {
+                    const int16Buffer = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
                         int16Buffer[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
                     }
-
-                    // Wysyłamy paczkę binarną przez sieć LAN do serwera
                     socketRef.current.send(int16Buffer.buffer);
                 };
             } catch (err) {
-                console.error("Odmowa dostępu do mikrofonu na urządzeniu:", err);
-                setAiMessage("Brak uprawnień do mikrofonu w przeglądarce!");
+                console.error("Błąd audio:", err);
             }
         };
-
         startAudioStream();
-
         return () => {
             if (processor) processor.disconnect();
             if (audioContext) audioContext.close();
             if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
         };
-    }, [isVoicePaused]);
+    }, [isVoicePaused, hasPermissions]);
 
-    // 4. Obsługa klatek wideo z kamer
     const handleFrontResults = (results) => {
-        if (!results.poseLandmarks || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN || isVoicePaused) return;
+        if (!hasPermissions || isVoicePaused || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
+        if (!results || !results.poseLandmarks || results.poseLandmarks.length === 0) return;
         const now = performance.now();
         if (now - cameraState.current.front.lastSendTime < 100) return;
         cameraState.current.front.lastSendTime = now;
-
         socketRef.current.send(JSON.stringify({ camera: "front", landmarks: results.poseLandmarks }));
     };
 
     const handleSideResults = (results) => {
-        if (!results.poseLandmarks || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN || isVoicePaused) return;
+        if (!hasPermissions || isVoicePaused || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
+        if (!results || !results.poseLandmarks || results.poseLandmarks.length === 0) return;
         const now = performance.now();
         if (now - cameraState.current.side.lastSendTime < 100) return;
         cameraState.current.side.lastSendTime = now;
-
         socketRef.current.send(JSON.stringify({ camera: "side", landmarks: results.poseLandmarks }));
     };
 
@@ -207,17 +172,17 @@ const Training = () => {
             <header className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between shadow-lg">
                 <div className="flex items-center space-x-3">
                     <span className="text-2xl">🏐</span>
-                    <h1 className="text-xl font-black tracking-tight text-white uppercase">
-                        Trener AI <span className="text-blue-500 text-sm font-normal normal-case">Sieciowy</span>
-                    </h1>
+                    <h1 className="text-xl font-black tracking-tight text-white uppercase">Trener AI</h1>
                 </div>
-                <button onClick={() => navigate('/stats')} className="bg-red-600 hover:bg-red-500 text-white px-5 py-2 rounded-xl font-bold text-sm tracking-wide transition-all shadow-md active:scale-95">
-                    ZAKOŃCZ TRENING (STOP)
+                <button onClick={() => navigate('/stats')} className="bg-red-600 hover:bg-red-500 text-white px-5 py-2 rounded-xl font-bold text-sm transition-all shadow-md">
+                    ZAKOŃCZ TRENING
                 </button>
             </header>
 
             <main className="flex-1 p-6 grid grid-cols-1 xl:grid-cols-4 gap-6 overflow-hidden">
                 <section className="xl:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-6 h-full">
+
+                    {/* Kamera Frontowa */}
                     <div className="bg-gray-800 rounded-2xl border border-gray-700 overflow-hidden relative shadow-md flex flex-col">
                         <div className="p-3 bg-gray-750 border-b border-gray-700 flex justify-between items-center">
                             <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kamera Frontowa</span>
@@ -226,11 +191,14 @@ const Training = () => {
                             </select>
                         </div>
                         <div className="flex-1 bg-black relative flex items-center justify-center min-h-[300px]">
-                            <video ref={videoFrontRef} className="absolute inset-0 w-full h-full object-cover opacity-0 pointer-events-none" playsInline muted />
-                            <canvas ref={canvasFrontRef} className="absolute inset-0 w-full h-full object-contain" width={640} height={480} />
+                            {/* WIDEO JEST TERAZ WIDOCZNE (USUNIĘTE OPACITY-0) */}
+                            <video ref={videoFrontRef} className="absolute inset-0 w-full h-full object-cover" playsInline muted />
+                            {/* CANVAS JEST PRZEZROCZYSTĄ WARSTWĄ DO RYSOwANIA LINII AI */}
+                            <canvas ref={canvasFrontRef} className="absolute inset-0 w-full h-full object-cover pointer-events-none" width={640} height={480} />
                         </div>
                     </div>
 
+                    {/* Kamera Boczna */}
                     <div className="bg-gray-800 rounded-2xl border border-gray-700 overflow-hidden relative shadow-md flex flex-col">
                         <div className="p-3 bg-gray-750 border-b border-gray-700 flex justify-between items-center">
                             <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kamera Boczna</span>
@@ -239,17 +207,19 @@ const Training = () => {
                             </select>
                         </div>
                         <div className="flex-1 bg-black relative flex items-center justify-center min-h-[300px]">
-                            <video ref={videoSideRef} className="absolute inset-0 w-full h-full object-cover opacity-0 pointer-events-none" playsInline muted />
-                            <canvas ref={canvasSideRef} className="absolute inset-0 w-full h-full object-contain" width={640} height={480} />
+                            <video ref={videoSideRef} className="absolute inset-0 w-full h-full object-cover" playsInline muted />
+                            <canvas ref={canvasSideRef} className="absolute inset-0 w-full h-full object-cover pointer-events-none" width={640} height={480} />
                         </div>
                     </div>
+
                 </section>
 
+                {/* Panel boczny statystyk */}
                 <section className="flex flex-col gap-6 h-full">
-                    <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-6 shadow-lg text-center relative overflow-hidden flex flex-col justify-center items-center py-8">
+                    <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-6 shadow-lg text-center py-8">
                         <h2 className="text-xs font-bold uppercase tracking-widest text-blue-200 mb-1">Poprawne Powtórzenia</h2>
-                        <p className="text-7xl font-black text-white tracking-tight">{repCount}</p>
-                        <span className="mt-2 inline-block text-[10px] font-bold px-3 py-1 bg-blue-900/40 rounded-full text-blue-100 uppercase tracking-wider">
+                        <p className="text-7xl font-black text-white">{repCount}</p>
+                        <span className="mt-2 inline-block text-[10px] font-bold px-3 py-1 bg-blue-900/40 rounded-full text-blue-100 uppercase">
                             Tryb: {passType}
                         </span>
                     </div>
@@ -283,7 +253,7 @@ const Training = () => {
 
                         <div className="mt-4 pt-4 border-t border-gray-700 flex items-center justify-center space-x-2 text-xs text-gray-400">
                             <span className={`w-2 h-2 rounded-full ${isVoicePaused ? 'bg-amber-500 animate-pulse' : 'bg-green-500 animate-pulse'}`} />
-                            <span>Lokalny mikrofon aktywny. Głos wysyłany na serwer.</span>
+                            <span>Lokalny mikrofon aktywny.</span>
                         </div>
                     </div>
                 </section>

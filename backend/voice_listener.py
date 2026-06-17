@@ -1,20 +1,3 @@
-"""
-Task 4.4 – Integracja Vosk STT
-Task 4.5 – Mapowanie komend głosowych na zdarzenia sterujące
-
-Uruchamia wątek nasłuchujący mikrofon przez PyAudio + Vosk,
-rozpoznaje polskie komendy i wysyła zdarzenia do callbacku
-(podpinanego przez WebSocket w main.py).
-
-Wymagania (requirements.txt):
-    vosk
-    pyaudio
-
-Model polski do pobrania:
-    https://alphacephei.com/vosk/models  →  vosk-model-small-pl-0.22
-    Rozpakuj do katalogu:  backend/vosk-model-pl/
-"""
-
 from __future__ import annotations
 
 import json
