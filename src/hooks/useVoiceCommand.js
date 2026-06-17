@@ -1,64 +1,78 @@
 import { useEffect, useRef } from 'react';
 
 const useVoiceCommand = (onStopCommand) => {
-    // Trzymamy referencję do funkcji, żeby uniknąć problemów z odświeżaniem Reacta
     const onStopRef = useRef(onStopCommand);
+    const isRunning = useRef(false); // Flaga zapobiegająca dublowaniu startu
 
     useEffect(() => {
         onStopRef.current = onStopCommand;
     }, [onStopCommand]);
 
     useEffect(() => {
-        // Sprawdzenie, czy przeglądarka wspiera nasłuchiwanie (Chrome/Edge działają najlepiej)
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
         if (!SpeechRecognition) {
-            console.warn('Twoja przeglądarka nie obsługuje rozpoznawania mowy (Web Speech API).');
+            console.warn('Web Speech API nie jest obsługiwane.');
             return;
         }
 
         const recognition = new SpeechRecognition();
         recognition.lang = 'pl-PL';
-        recognition.continuous = true; // Słuchaj bez przerwy
-        recognition.interimResults = false; // Bierzemy pod uwagę tylko pełne słowa
+        recognition.continuous = true; 
+        recognition.interimResults = false; 
 
-        // Co się dzieje, gdy przeglądarka rozpozna tekst:
+        recognition.onstart = () => {
+            isRunning.current = true;
+        };
+
         recognition.onresult = (event) => {
             const current = event.resultIndex;
-            // Pobieramy to, co usłyszał komputer, usuwamy spacje i zamieniamy na małe litery
             const transcript = event.results[current][0].transcript.trim().toLowerCase();
 
-            console.log("🎤 Komputer usłyszał:", transcript);
-
-            // Jeśli w wypowiedzi padło słowo "stop"
             if (transcript.includes('stop')) {
                 if (onStopRef.current) {
-                    onStopRef.current(); // Uruchom funkcję przekazaną do hooka (np. navigate('/'))
+                    onStopRef.current();
                 }
             }
         };
 
-        // Przeglądarka ma w zwyczaju wyłączać mikrofon po chwili ciszy.
-        // Ta funkcja zmusza ją, żeby od razu włączyła go z powrotem.
-        recognition.onend = () => {
-            try {
-                recognition.start();
-            } catch (error) {
-                // Ciche zignorowanie błędu, gdy komponent jest niszczony
+        // Zabezpieczenie przed zablokowaniem głównego wątku (Pętla Śmierci)
+        recognition.onerror = (event) => {
+            // Ignorujemy błędy braku mowy (to normalne przy ciszy)
+            if (event.error !== 'no-speech') {
+                console.warn("🎤 Błąd mikrofonu:", event.error);
             }
         };
 
-        // Uruchamiamy mikrofon
+        recognition.onend = () => {
+            isRunning.current = false;
+            // Dodajemy 500ms (pół sekundy) przerwy, zanim pozwolimy mikrofonowi wystartować ponownie.
+            // To całkowicie ulecza problem klatkowania kamer (lagów)!
+            setTimeout(() => {
+                try {
+                    if (!isRunning.current) {
+                        recognition.start();
+                    }
+                } catch (error) {
+                    // ignorujemy ciche błędy startu
+                }
+            }, 500);
+        };
+
         try {
-            recognition.start();
+            if (!isRunning.current) {
+                recognition.start();
+            }
         } catch (error) {
             console.error("Błąd startu mikrofonu:", error);
         }
 
-        // Funkcja sprzątająca (wyłącza mikrofon, gdy wyjdziesz z treningu)
         return () => {
-            recognition.onend = null; // Wyłączamy automatyczne wznawianie
-            recognition.stop();
+            recognition.onend = null; 
+            try {
+                recognition.stop();
+            } catch (e) {}
+            isRunning.current = false;
         };
     }, []); 
 };
