@@ -4,19 +4,24 @@ const useSpeech = () => {
   const speak = useCallback((text) => {
     // Sprawdzamy, czy przeglądarka obsługuje TTS
     if ('speechSynthesis' in window) {
-      // Anulujemy poprzednie komunikaty, żeby asystent nie "gadał jeden przez drugiego"
+      
+      // 1. Twardy reset - uciszamy aktualnie wypowiadany tekst
       window.speechSynthesis.cancel();
 
-      const utterance = new SpeechSynthesisUtterance(text);
-      
-      // Konfiguracja głosu
-      utterance.lang = 'pl-PL'; // Język polski
-      utterance.rate = 1.1;     // Prędkość (1.0 to domyślna, 1.1 jest nieco bardziej dynamiczna do treningu)
-      utterance.pitch = 1.0;    // Ton głosu
-      utterance.volume = 1.0;
+      // 2. Hack na bug w Chrome: dajemy przeglądarce 50ms na wyczyszczenie pamięci
+      setTimeout(() => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        
+        // Konfiguracja głosu
+        utterance.lang = 'pl-PL'; // Język polski
+        utterance.rate = 1.1;     // Prędkość (nieco szybsza)
+        utterance.pitch = 1.0;    // Ton głosu
+        utterance.volume = 1.0;   // Głośność
 
-      // Odtwarzanie
-      window.speechSynthesis.speak(utterance);
+        // Odtwarzanie
+        window.speechSynthesis.speak(utterance);
+      }, 50);
+
     } else {
       console.warn('Twoja przeglądarka nie obsługuje Web Speech API.');
     }

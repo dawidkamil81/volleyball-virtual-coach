@@ -32,6 +32,8 @@ const Training = () => {
     const videoSideRef = useRef(null);
     const canvasSideRef = useRef(null);
     
+    //mowienie
+    const lastSpokenMessage = useRef('');
 
     // Referencje dla WebSocketu i uśredniania klatek (Smoothing)
     const socketRef = useRef(null);
@@ -78,8 +80,11 @@ const Training = () => {
 
                 // Sprawdzamy, czy to jest komunikat głosowy
                 if (response.type === 'feedback' && response.text) {
-                    setAiMessage(response.text); // Aktualizujemy tekst na ekranie
-                    speak(response.text);        // Odpalamy syntezator mowy!
+                    if (response.text !== lastSpokenMessage.current) {
+                        setAiMessage(response.text); 
+                        speak(response.text);        
+                        lastSpokenMessage.current = response.text; // Zapisujemy jako ostatnio powiedziane
+                    }
                 }
                 
                 // Opcjonalnie: Jeśli serwer przyśle zaktualizowane powtórzenia
