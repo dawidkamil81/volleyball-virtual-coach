@@ -1,25 +1,35 @@
 import sqlite3
+import os
 
-conn = sqlite3.connect('volleyball.db')
-cur = conn.cursor()
+print("Próbuję stworzyć bazę...")
 
+try:
+    # Wymuszamy ścieżkę do folderu backend
+    db_path = os.path.join(os.path.dirname(__file__), 'volleyball.db')
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
 
-# Training table
-cur.execute('''CREATE TABLE IF NOT EXISTS Training (
-    TrainingID INTEGER PRIMARY KEY AUTOINCREMENT,
-    TrainingType TEXT NOT NULL,
-    Duration INTEGER,
-    OverallAccuracy REAL
-)''')
+    cur.execute('''CREATE TABLE IF NOT EXISTS Training (
+        TrainingID INTEGER PRIMARY KEY AUTOINCREMENT,
+        TrainingType TEXT NOT NULL,
+        StartTime TEXT,
+        EndTime TEXT,
+        Duration INTEGER,
+        SuccessfulReps INTEGER,
+        TotalAttempts INTEGER,
+        OverallAccuracy REAL
+    )''')
 
-# AnglesAnalitic table
-cur.execute('''CREATE TABLE IF NOT EXISTS AnglesAnalitic (
-    TrainingID INTEGER PRIMARY KEY,
-    LegAngle REAL,
-    BodyAngle REAL,
-    ArmAngle REAL,
-    FOREIGN KEY (TrainingID) REFERENCES Training(TrainingID) ON DELETE CASCADE
-)''')
+    cur.execute('''CREATE TABLE IF NOT EXISTS AnglesAnalitic (
+        TrainingID INTEGER PRIMARY KEY,
+        LegAngle REAL,
+        BodyAngle REAL,
+        ArmAngle REAL,
+        FOREIGN KEY (TrainingID) REFERENCES Training(TrainingID) ON DELETE CASCADE
+    )''')
 
-conn.commit()
-conn.close()
+    conn.commit()
+    conn.close()
+    print(f"Baza stworzona pomyślnie w: {db_path}")
+except Exception as e:
+    print(f"BŁĄD: {e}")
