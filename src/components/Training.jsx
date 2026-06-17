@@ -24,7 +24,7 @@ const Training = () => {
     const [conditions, setConditions] = useState([]);
 
     // Stan wiadomości od trenera AI
-    const [aiMessage, setAiMessage] = useState('');
+    //const [aiMessage, setAiMessage] = useState('');
 
     // Referencje dla DWÓCH kamer
     const videoFrontRef = useRef(null);
@@ -32,12 +32,6 @@ const Training = () => {
     const videoSideRef = useRef(null);
     const canvasSideRef = useRef(null);
     
-    // Referencje dla WebSocketu i uśredniania klatek (Smoothing)
-    const socketRef = useRef(null);
-    const cameraState = useRef({
-        front: { buffer: [], lastSendTime: 0 },
-        side: { buffer: [], lastSendTime: 0 }
-    });
 
     // Referencje dla WebSocketu i uśredniania klatek (Smoothing)
     const socketRef = useRef(null);
