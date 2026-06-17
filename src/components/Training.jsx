@@ -29,16 +29,63 @@ const Training = () => {
     // Zapobieganie "jąkaniu się" trenera AI
     const lastSpokenMessage = useRef('');
 
-    // Referencje dla WebSocketu i uśredniania klatek (Smoothing)
+    // Referencje dla WebSocketu (Zoptymalizowane)
     const socketRef = useRef(null);
     const cameraState = useRef({
-        front: { buffer: [], lastSendTime: 0 },
-        side: { buffer: [], lastSendTime: 0 }
+        front: { lastSendTime: 0 },
+        side: { lastSendTime: 0 }
     });
+
+    // ==========================================
+    // INTELIGENTNY MIKROFON (Tylko w fazie IDLE)
+    // ==========================================
+    useEffect(() => {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) return;
+
+        let recognition = null;
+        let isIntentionallyStopped = false; // Flaga zapobiegająca restartom, gdy nie chcemy
+
+        // Uruchamiamy mikrofon TYLKO w fazach oczekiwania na ruch
+        if (currentPhase === 'START' || currentPhase === 'IDLE') {
+            recognition = new SpeechRecognition();
+            recognition.lang = 'pl-PL';
+            recognition.continuous = true;
+            recognition.interimResults = false;
+
+            recognition.onresult = (event) => {
+                const transcript = event.results[event.resultIndex][0].transcript.trim().toLowerCase();
+                if (transcript.includes('stop')) {
+                    console.log("🛑 Wypowiedziano STOP. Zamykam trening!");
+                    navigate('/');
+                }
+            };
+
+            recognition.onend = () => {
+                if (!isIntentionallyStopped) {
+                    setTimeout(() => {
+                        try { recognition.start(); } catch (e) {}
+                    }, 1000);
+                }
+            };
+
+            try { recognition.start(); } catch (e) {}
+        }
+
+        // Gdy zmienia się faza (np. zaczynasz odbicie), całkowicie zabijamy mikrofon
+        return () => {
+            if (recognition) {
+                isIntentionallyStopped = true;
+                recognition.onend = null;
+                try { recognition.stop(); } catch (e) {}
+            }
+        };
+    }, [currentPhase, navigate]); 
+    // Zależność to currentPhase - reaguje na zmiany pozycji!
+    // ==========================================
 
     // Połączenie z WebSocketem
     useEffect(() => {
-        // PRAWIDŁOWY ADRES DO TWOJEGO MAIN.PY
         const ws = new WebSocket('ws://localhost:8000/ws/trainer');
         socketRef.current = ws;
 
@@ -58,7 +105,6 @@ const Training = () => {
                 setAiMessage(data.message); 
                 
                 // --- MOWA AI ---
-                // Mówimy NA GŁOS tylko ważne zmiany (feedback lub zmiana stanu), unikamy spamu "info"
                 if ((data.type === 'feedback' || data.type === 'state_change') && data.message) {
                     if (data.message !== lastSpokenMessage.current) {
                         speak(data.message);
@@ -106,48 +152,26 @@ const Training = () => {
         getDevices();
     }, []);
 
-    // Funkcja uśredniająca klatki (SMOOTHING)
+    // Funkcja BŁYSKAWICZNA wysyłająca dane (BEZ zamulających pętli)
     const sendLandmarksToAPI = (landmarks, cameraView) => {
         if (!isCalibrated) return;
 
         const state = cameraState.current[cameraView];
         const now = Date.now();
 
-        state.buffer.push(landmarks);
-
-        // Wysyłaj uśrednioną paczkę co 100ms
+        // Wysyłaj surową paczkę co 100ms
         if (now - state.lastSendTime < 100) return;
-
-        const numFrames = state.buffer.length;
-        const averagedLandmarks = [];
-
-        for (let i = 0; i < 33; i++) {
-            let sumX = 0, sumY = 0, sumZ = 0, sumVis = 0;
-            for (let j = 0; j < numFrames; j++) {
-                sumX += state.buffer[j][i].x;
-                sumY += state.buffer[j][i].y;
-                sumZ += state.buffer[j][i].z;
-                sumVis += state.buffer[j][i].visibility;
-            }
-            averagedLandmarks.push({
-                x: sumX / numFrames,
-                y: sumY / numFrames,
-                z: sumZ / numFrames,
-                visibility: sumVis / numFrames
-            });
-        }
 
         const payload = {
             camera: cameraView,
-            exerciseType: passType, // Dodane, aby serwer w przyszłości wiedział co trenujesz
-            landmarks: averagedLandmarks
+            exerciseType: passType,
+            landmarks: landmarks
         };
 
         if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
             socketRef.current.send(JSON.stringify(payload));
         }
 
-        state.buffer = [];
         state.lastSendTime = now;
     };
 
@@ -164,7 +188,7 @@ const Training = () => {
             <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
                 <div>
                     <h1 className="text-2xl md:text-3xl font-bold text-gray-100 tracking-tight">Trening Siatkarski</h1>
-                    <p className="text-gray-400 text-sm mt-1">AI Coach z systemem mowy i uśrednianiem klatek</p>
+                    <p className="text-gray-400 text-sm mt-1">Szybka wysyłka + Mądry Mikrofon</p>
                 </div>
                 <div className="flex gap-4 bg-gray-800 p-3 rounded-xl border border-gray-700">
                     <div className="flex flex-col border-r border-gray-600 pr-4">
@@ -193,7 +217,14 @@ const Training = () => {
                         </select>
                     </div>
                 </div>
-                <button onClick={() => navigate('/')} className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl font-bold">ZAKOŃCZ</button>
+                <div className="flex flex-col items-center">
+                    <button onClick={() => navigate('/')} className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl font-bold w-full">ZAKOŃCZ</button>
+                    {/* Dynamiczny napis pokazujący, czy mikrofon słucha */}
+                    <span className="text-[10px] text-gray-500 mt-1 uppercase font-bold tracking-wider flex items-center gap-1">
+                        <span className={`w-2 h-2 rounded-full ${(currentPhase === 'START' || currentPhase === 'IDLE') ? 'bg-red-500 animate-pulse' : 'bg-gray-600'}`}></span>
+                        {(currentPhase === 'START' || currentPhase === 'IDLE') ? 'Powiedz "STOP"' : 'Mikrofon uśpiony'}
+                    </span>
+                </div>
             </header>
 
             <main className="flex-1 flex flex-col lg:flex-row gap-6">
@@ -208,21 +239,25 @@ const Training = () => {
                         <video ref={videoSideRef} className="hidden" playsInline></video>
                         <canvas ref={canvasSideRef} className="absolute inset-0 w-full h-full object-cover z-0" width="640" height="480"></canvas>
                         {!isCalibrated && (
-                            <div className="absolute inset-0 bg-black/60 z-20 flex flex-col items-center justify-center">
-                                <button onClick={() => setIsCalibrated(true)} className="bg-green-600 hover:bg-green-500 px-6 py-2 rounded-full font-bold">START</button>
+                            <div className="absolute inset-0 bg-black/60 z-20 flex flex-col items-center justify-center p-4 text-center">
+                                <p className="text-green-400 font-bold mb-4">Ustaw się bokiem do kamery, aby analizować postawę.</p>
+                                <button onClick={() => setIsCalibrated(true)} className="bg-green-600 hover:bg-green-500 px-6 py-3 rounded-full font-bold shadow-[0_0_15px_rgba(34,197,94,0.4)] transition-transform hover:scale-105">START</button>
                             </div>
                         )}
                     </div>
                 </section>
 
                 <section className="w-full lg:w-64 flex flex-row lg:flex-col gap-4">
-                    <div className="bg-gray-800 rounded-3xl p-4 flex-1 flex flex-col items-center justify-center border border-gray-700">
+                    <div className="bg-gray-800 rounded-3xl p-4 flex-1 flex flex-col items-center justify-center border border-gray-700 shadow-lg">
                         <h2 className="text-gray-400 text-xs uppercase font-bold mb-2">Poprawne Odbicia</h2>
-                        <div className="text-4xl font-black text-blue-500">{repCount}</div>
+                        <div className="text-5xl font-black text-blue-500 drop-shadow-[0_0_10px_rgba(59,130,246,0.3)]">{repCount}</div>
                     </div>
-                    <div className="bg-gray-800 rounded-3xl p-4 flex-1 flex flex-col justify-start border border-gray-700">
+                    <div className="bg-gray-800 rounded-3xl p-4 flex-1 flex flex-col justify-start border border-gray-700 shadow-lg">
                         <div className="flex justify-between items-center mb-4 border-b border-gray-700 pb-2">
-                            <h2 className="text-gray-400 text-xs uppercase font-bold">AI Trener</h2>
+                            <h2 className="text-gray-400 text-xs uppercase font-bold flex items-center gap-2">
+                                <span className={`w-2 h-2 rounded-full ${isCalibrated ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`}></span>
+                                AI Trener
+                            </h2>
                             <span className="bg-gray-700 text-yellow-400 text-[10px] px-2 py-1 rounded-full font-bold">{currentPhase}</span>
                         </div>
                         <div className="flex-1 flex flex-col items-center justify-center space-y-3">
@@ -230,21 +265,14 @@ const Training = () => {
                                 {!isCalibrated ? "Czekam na start..." : aiMessage}
                             </p>
                             
-                            {/* Wyświetlanie warunków dla danej fazy */}
                             {conditions.length > 0 && (
                                 <div className="w-full mt-2 bg-gray-900 rounded-lg p-3 border border-gray-700">
                                     <h3 className="text-[10px] text-gray-500 uppercase font-bold mb-2 tracking-wider">Warunki fazy:</h3>
                                     <ul className="space-y-1">
                                         {conditions.map((cond, idx) => (
                                             <li key={idx} className="flex items-center text-xs">
-                                                {cond.met ? (
-                                                    <span className="text-green-500 mr-2">✔</span>
-                                                ) : (
-                                                    <span className="text-red-500 mr-2">✖</span>
-                                                )}
-                                                <span className={cond.met ? "text-gray-300" : "text-gray-500"}>
-                                                    {cond.name}
-                                                </span>
+                                                {cond.met ? <span className="text-green-500 mr-2">✔</span> : <span className="text-red-500 mr-2">✖</span>}
+                                                <span className={cond.met ? "text-gray-300" : "text-gray-500"}>{cond.name}</span>
                                             </li>
                                         ))}
                                     </ul>
