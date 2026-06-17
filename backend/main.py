@@ -9,8 +9,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from backend.schemas import PoseData
-
+from backend.schemas import PoseData, TrainingSummary
+from backend.db_query import save_training_session, get_trainings
 from backend.coach_engine import OverheadPassCoach
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.post("/api/training/save")
+async def save_training_endpoint(summary: TrainingSummary):
+    try:
+        training_id = save_training_session(
+            training_type=summary.training_type,
+            start_time=summary.start_time,
+            end_time=summary.end_time,
+            duration=summary.duration,
+            successful_reps=summary.successful_reps,
+            total_attempts=summary.total_attempts,
+            overall_accuracy=summary.overall_accuracy
+        )
+        return {"status": "success", "training_id": training_id}
+    except Exception as e:
+        logger.error(f"Błąd zapisu w bazie: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/training/stats")
+async def get_training_stats_endpoint():
+    try:
+        trainings = get_trainings()
+        return {"status": "success", "data": trainings}
+    except Exception as e:
+        logger.error(f"Błąd pobierania bazy: {e}")
+        return {"status": "error", "message": str(e)}
 
 @app.websocket("/ws/trainer")
 async def trainer_websocket(websocket: WebSocket) -> None:

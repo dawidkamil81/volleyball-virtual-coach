@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
+import useSpeech from '../hooks/useSpeech';
 
-const useVoiceCommand = (onStopCommand) => {
+const useVoiceCommand = (onStopCommand, speakFunction) => {
     const onStopRef = useRef(onStopCommand);
     const isRunning = useRef(false); // Flaga zapobiegająca dublowaniu startu
 
@@ -28,11 +29,15 @@ const useVoiceCommand = (onStopCommand) => {
         recognition.onresult = (event) => {
             const current = event.resultIndex;
             const transcript = event.results[current][0].transcript.trim().toLowerCase();
+            
+            console.log("🎤 Mikrofon usłyszał:", transcript);
 
             if (transcript.includes('stop')) {
+                if (speakFunction) speakFunction("koniec");
                 if (onStopRef.current) {
                     onStopRef.current();
                 }
+                //
             }
         };
 

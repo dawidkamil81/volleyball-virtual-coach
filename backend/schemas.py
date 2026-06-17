@@ -21,3 +21,12 @@ class PoseData(BaseModel):
             msg = "Landmarks musi zawierać dokładnie 33 elementy"
             raise ValueError(msg)
         return value
+
+class TrainingSummary(BaseModel):
+    training_type: str
+    start_time: str
+    end_time: str
+    duration: int
+    successful_reps: int
+    total_attempts: int
+    overall_accuracy: float
