@@ -28,6 +28,9 @@ const Training = () => {
     const socketRef = useRef(null);
 
     const lastSpokenMessage = useRef('');
+    const isSpeakingRef = useRef(false); // Blokada przesyłu klatek wideo podczas mowy lektora
+    const pendingDataRef = useRef(null); // Schowek na dane telemetryczne z serwera, gdy lektor jeszcze mówi
+
     const cameraState = useRef({
         front: { lastSendTime: 0 },
         side: { lastSendTime: 0 }
@@ -47,6 +50,7 @@ const Training = () => {
         requestInitialPermissions();
     }, []);
 
+    // Automatyczne przypisanie kamer (obsługa 1 lub więcej urządzeń)
     useEffect(() => {
         if (!hasPermissions) return;
         const getDevices = async () => {
@@ -66,6 +70,58 @@ const Training = () => {
         getDevices();
     }, [hasPermissions]);
 
+    // Aplikowanie danych treningowych z serwera po zakończeniu kwestii lektora
+    const applyServerData = (data) => {
+        if (!data) return;
+        if (data.status) {
+            setCurrentPhase(data.status);
+        }
+        if (data.type === 'feedback') {
+            setMessageType(data.rep_increment > 0 ? 'success' : 'error');
+        } else if (data.type === 'state_change') {
+            setMessageType('info');
+        }
+        if (data.session) {
+            setRepCount(data.session.total_reps);
+        }
+        if (data.conditions) {
+            setConditions(data.conditions);
+            setIsCalibrated(true);
+        }
+    };
+
+    // Pomocnicza funkcja realizująca syntezę mowy z twardym odblokowaniem awaryjnym (antylag dla Chrome)
+    const speakAndUnlock = (text, callbackOnEnd = null) => {
+        if (!text) return;
+        isSpeakingRef.current = true;
+
+        window.speechSynthesis.cancel(); // Przerwij poprzednie kwestie, by uniknąć kolejkowania
+
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'pl-PL';
+
+        utterance.onend = () => {
+            isSpeakingRef.current = false;
+            if (callbackOnEnd) callbackOnEnd();
+        };
+
+        utterance.onerror = () => {
+            isSpeakingRef.current = false;
+            if (callbackOnEnd) callbackOnEnd();
+        };
+
+        // ZABEZPIECZENIE AWARYJNE: Jeśli przeglądarka zgubi zdarzenie onend/onerror, odblokuj system po 3 sekundach
+        setTimeout(() => {
+            if (isSpeakingRef.current) {
+                console.warn("[Zabezpieczenie Mowy] Wymuszone awaryjne zdęcie blokady isSpeaking");
+                isSpeakingRef.current = false;
+                if (callbackOnEnd) callbackOnEnd();
+            }
+        }, 3000);
+
+        window.speechSynthesis.speak(utterance);
+    };
+
     useEffect(() => {
         const ws = new WebSocket("ws://localhost:8000/ws/trainer");
         socketRef.current = ws;
@@ -77,41 +133,71 @@ const Training = () => {
         ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
 
+            // 1. OBSŁUGA KOMEND GŁOSOWYCH (Zintegrowane z plikiem voice_listener.py)
             if (data.type === "voice_command") {
                 if (data.message) {
-                    speak(data.message);
                     setAiMessage(data.message);
+                    speakAndUnlock(data.message); // Czytaj komunikat, ale nie blokuj wątku stanów Reacta
                 }
+
+                // AKCJA NATYCHMIASTOWA: Zmiana stanów bez czekania na lektora - odblokowuje przesył klatek z kamer
                 switch (data.event) {
-                    case "voice_pause": setIsVoicePaused(true); setMessageType("info"); break;
-                    case "voice_resume": setIsVoicePaused(false); break;
-                    case "voice_reset": setRepCount(0); setConditions([]); setCurrentPhase("START"); setMessageType("info"); break;
-                    case "voice_stop": navigate('/stats'); break;
-                    default: break;
+                    case "voice_pause":
+                        setIsVoicePaused(true);
+                        setMessageType("info");
+                        break;
+
+                    case "voice_start":
+                    case "voice_resume":
+                        setIsVoicePaused(false); // Odmraża kamery w handleFrontResults / handleSideResults
+                        setIsCalibrated(true);    // Zdejmuje komunikat "Czekam na start..."
+                        setCurrentPhase("START"); // Ustawia stan początkowy maszyny
+                        break;
+
+                    case "voice_reset":
+                        setRepCount(0);
+                        setConditions([]);
+                        setCurrentPhase("START");
+                        setMessageType("info");
+                        break;
+
+                    case "voice_stop":
+                        navigate('/stats');
+                        break;
+                    default:
+                        break;
                 }
-                return;
+                return; // Ważne: kończymy obsługę pakietu głosowego
             }
 
-            if (data.status) {
-                setCurrentPhase(data.status);
-                if (data.message && data.message !== lastSpokenMessage.current) {
-                    setAiMessage(data.message);
-                    speak(data.message);
-                    lastSpokenMessage.current = data.message;
+            // 2. OBSŁUGA KOMUNIKATÓW ZWROTNYCH Z ANALIZY WIDEO (Informacje o postawie / klatkach)
+            if (data.message && data.message !== lastSpokenMessage.current) {
+                lastSpokenMessage.current = data.message;
+                setAiMessage(data.message);
+
+                pendingDataRef.current = data;
+
+                speakAndUnlock(data.message, () => {
+                    if (pendingDataRef.current) {
+                        applyServerData(pendingDataRef.current);
+                        pendingDataRef.current = null;
+                    }
+                });
+            } else {
+                // Jeśli serwer przesłał klatkę bez nowego komunikatu tekstowego do przeczytania
+                if (!isSpeakingRef.current) {
+                    applyServerData(data);
                 }
-                if (data.type === 'feedback') {
-                    setMessageType(data.rep_increment > 0 ? 'success' : 'error');
-                } else if (data.type === 'state_change') {
-                    setMessageType('info');
-                }
-                if (data.session) setRepCount(data.session.total_reps);
-                if (data.conditions) { setConditions(data.conditions); setIsCalibrated(true); }
             }
         };
 
-        return () => { if (ws) ws.close(); };
-    }, [navigate, speak]);
+        return () => {
+            if (ws) ws.close();
+            window.speechSynthesis.cancel();
+        };
+    }, [navigate]);
 
+    // Zarządzanie strumieniem audio z mikrofonu (Wersja naprawiona)
     useEffect(() => {
         if (!hasPermissions) return;
         let audioContext, mediaStream, processor;
@@ -126,7 +212,10 @@ const Training = () => {
                 processor.connect(audioContext.destination);
 
                 processor.onaudioprocess = (e) => {
-                    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN || isVoicePaused) return;
+                    // --- POPRAWKA: Usunięto warunki isVoicePaused oraz isSpeakingRef.current ---
+                    // Mikrofon musi wysyłać pakiety ZAWSZE, żeby Vosk mógł wychwycić komendę "start" podczas pauzy!
+                    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
+
                     const inputData = e.inputBuffer.getChannelData(0);
                     const int16Buffer = new Int16Array(inputData.length);
                     for (let i = 0; i < inputData.length; i++) {
@@ -135,7 +224,7 @@ const Training = () => {
                     socketRef.current.send(int16Buffer.buffer);
                 };
             } catch (err) {
-                console.error("Błąd audio:", err);
+                console.error("Błąd konfiguracji mikrofonu:", err);
             }
         };
         startAudioStream();
@@ -144,20 +233,25 @@ const Training = () => {
             if (audioContext) audioContext.close();
             if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
         };
-    }, [isVoicePaused, hasPermissions]);
+    }, [hasPermissions]);
 
+    // Przesył punktów MediaPipe z Kamery Frontowej
     const handleFrontResults = (results) => {
-        if (!hasPermissions || isVoicePaused || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
+        // Blokada wysyłania: w trybie pauzy głosowej lub gdy lektor aktualnie strofuje/chwali użytkownika
+        if (!hasPermissions || isVoicePaused || isSpeakingRef.current || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
         if (!results || !results.poseLandmarks || results.poseLandmarks.length === 0) return;
+
         const now = performance.now();
-        if (now - cameraState.current.front.lastSendTime < 100) return;
+        if (now - cameraState.current.front.lastSendTime < 100) return; // limit do ~10 FPS
         cameraState.current.front.lastSendTime = now;
         socketRef.current.send(JSON.stringify({ camera: "front", landmarks: results.poseLandmarks }));
     };
 
+    // Przesył punktów MediaPipe z Kamery Bocznej
     const handleSideResults = (results) => {
-        if (!hasPermissions || isVoicePaused || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
+        if (!hasPermissions || isVoicePaused || isSpeakingRef.current || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
         if (!results || !results.poseLandmarks || results.poseLandmarks.length === 0) return;
+
         const now = performance.now();
         if (now - cameraState.current.side.lastSendTime < 100) return;
         cameraState.current.side.lastSendTime = now;
@@ -181,8 +275,7 @@ const Training = () => {
 
             <main className="flex-1 p-6 grid grid-cols-1 xl:grid-cols-4 gap-6 overflow-hidden">
                 <section className="xl:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-6 h-full">
-
-                    {/* Kamera Frontowa */}
+                    {/* Podgląd Kamery Frontowej */}
                     <div className="bg-gray-800 rounded-2xl border border-gray-700 overflow-hidden relative shadow-md flex flex-col">
                         <div className="p-3 bg-gray-750 border-b border-gray-700 flex justify-between items-center">
                             <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kamera Frontowa</span>
@@ -191,17 +284,17 @@ const Training = () => {
                             </select>
                         </div>
                         <div className="flex-1 bg-black relative flex items-center justify-center min-h-[300px]">
-                            {/* WIDEO JEST TERAZ WIDOCZNE (USUNIĘTE OPACITY-0) */}
                             <video ref={videoFrontRef} className="absolute inset-0 w-full h-full object-cover" playsInline muted />
-                            {/* CANVAS JEST PRZEZROCZYSTĄ WARSTWĄ DO RYSOwANIA LINII AI */}
                             <canvas ref={canvasFrontRef} className="absolute inset-0 w-full h-full object-cover pointer-events-none" width={640} height={480} />
                         </div>
                     </div>
 
-                    {/* Kamera Boczna */}
+                    {/* Podgląd Kamery Bocznej */}
                     <div className="bg-gray-800 rounded-2xl border border-gray-700 overflow-hidden relative shadow-md flex flex-col">
                         <div className="p-3 bg-gray-750 border-b border-gray-700 flex justify-between items-center">
-                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kamera Boczna</span>
+                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                                Kamera Boczna {frontCameraId === sideCameraId && <span className="text-blue-400 text-[10px] normal-case font-normal">(Zduplikowana z Front)</span>}
+                            </span>
                             <select value={sideCameraId} onChange={(e) => setSideCameraId(e.target.value)} className="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-300">
                                 {devices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || `Kamera ${d.deviceId.slice(0,5)}`}</option>)}
                             </select>
@@ -211,10 +304,9 @@ const Training = () => {
                             <canvas ref={canvasSideRef} className="absolute inset-0 w-full h-full object-cover pointer-events-none" width={640} height={480} />
                         </div>
                     </div>
-
                 </section>
 
-                {/* Panel boczny statystyk */}
+                {/* Panel boczny ze statystykami powtórzeń */}
                 <section className="flex flex-col gap-6 h-full">
                     <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-6 shadow-lg text-center py-8">
                         <h2 className="text-xs font-bold uppercase tracking-widest text-blue-200 mb-1">Poprawne Powtórzenia</h2>
@@ -252,8 +344,10 @@ const Training = () => {
                         </div>
 
                         <div className="mt-4 pt-4 border-t border-gray-700 flex items-center justify-center space-x-2 text-xs text-gray-400">
-                            <span className={`w-2 h-2 rounded-full ${isVoicePaused ? 'bg-amber-500 animate-pulse' : 'bg-green-500 animate-pulse'}`} />
-                            <span>Lokalny mikrofon aktywny.</span>
+                            <span className={`w-2 h-2 rounded-full ${isSpeakingRef.current ? 'bg-amber-500 animate-pulse' : 'bg-green-500 animate-pulse'}`} />
+                            <span>
+                                {isSpeakingRef.current ? "Lektor mówi... (Wstrzymano wizję)" : "System gotowy, mikrofon aktywny."}
+                            </span>
                         </div>
                     </div>
                 </section>

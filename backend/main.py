@@ -4,142 +4,142 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from backend.schemas import PoseData
 from backend.coach_engine import OverheadPassCoach
 from backend.db_query import save_session
-from backend.voice_listener import VoiceEvent, RecognizedCommand, voice_event_to_ws_message
 
-# Importujemy oficjalne komponenty Voska bezpośrednio dla serwera
+# Integracja z Twoim plikiem voice_listener.py
+from backend.voice_listener import VoiceEvent, RecognizedCommand, voice_event_to_ws_message, map_transcript_to_event
+
+# Komponenty Vosk do rozpoznawania mowy na serwerze
 from vosk import Model, KaldiRecognizer
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Volleyball Personal Trainer", version="0.1.0")
 
-# --- INICJALIZACJA VOSKA BEZPOŚREDNIO NA SERWERZE ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- INICJALIZACJA MODELU VOSK ---
 MODEL_PATH = Path(__file__).parent / "vosk-model-pl"
 
 if not MODEL_PATH.exists():
     logger.error(f"Brak modelu językowego Vosk w ścieżce: {MODEL_PATH.resolve()}")
     raise FileNotFoundError(f"Pobierz model polski i wypakuj go do folderu: {MODEL_PATH}")
 
-# Ładujemy model do pamięci RAM serwera tylko raz przy starcie aplikacji
 vosk_model = Model(str(MODEL_PATH))
-# Tworzymy rozpoznawacz dla dźwięku mono 16000Hz (taki wysyła nasz frontend)
 network_recognizer = KaldiRecognizer(vosk_model, 16000)
-
-
-# --- SŁOWNIK MAPOWANIA KOMEND GŁOSOWYCH NA SERWERZE ---
-def map_transcript_to_event(transcript: str) -> VoiceEvent | None:
-    """Mapuje rozpoznany tekst z sieci na odpowiednie zdarzenie treningowe."""
-    text = transcript.lower().strip()
-
-    if any(word in text for word in ["pauza", "czekaj", "stopuj"]):
-        return VoiceEvent.PAUSE
-    elif any(word in text for word in ["wznów", "dalej", "start", "dawaj", "wznow"]):
-        return VoiceEvent.RESUME
-    elif any(word in text for word in ["reset", "od nowa", "wyczyść", "wyczysc"]):
-        return VoiceEvent.RESET
-    elif any(word in text for word in ["koniec", "zakończ", "zakoncz", "stop"]):
-        return VoiceEvent.STOP
-
-    return None
 
 
 @app.websocket("/ws/trainer")
 async def trainer_websocket(websocket: WebSocket) -> None:
     await websocket.accept()
-    logger.info("WebSocket /ws/trainer accepted (Microphone stream from frontend allowed)")
+    logger.info("WebSocket /ws/trainer accepted")
 
     coach = OverheadPassCoach()
-    is_paused = False
-    stop_requested = False
+    start_session_time = time.time()
 
     try:
-        while not stop_requested:
-            # Odbieramy dowolną wiadomość (tekstową lub binarną) z sieci
+        while True:
+            # Reagujemy na typ wiadomości: binarna (mikrofon) lub tekstowa (wizja)
             message = await websocket.receive()
 
-            # --- OPCJA A: Przesłano dźwięk z mikrofonu w przeglądarce (Dane binarne) ---
+            # 1. OBSŁUGA STRUMIENIA AUDIO (Komendy głosowe z mikrofonu)
             if "bytes" in message:
-                audio_bytes = message["bytes"]
-
-                # Karmimy nasz sieciowy rozpoznawacz bajtami z pokoju treningowego
-                if network_recognizer.AcceptWaveform(audio_bytes):
-                    vosk_result = json.loads(network_recognizer.Result())
-                    transcript = vosk_result.get("text", "").strip()
+                audio_data = message["bytes"]
+                if network_recognizer.AcceptWaveform(audio_data):
+                    result = json.loads(network_recognizer.Result())
+                    transcript = result.get("text", "").strip()
 
                     if transcript:
-                        logger.info(f"Vosk rozpoznał tekst z sieci: '{transcript}'")
+                        logger.info(f"Vosk usłyszał komendę: '{transcript}'")
 
-                        # Wywołujemy naszą lokalną funkcję mapującą zamiast helpera
-                        matched_event = map_transcript_to_event(transcript)
+                        # Mapowanie tekstu przy użyciu funkcji z Twojego voice_listener.py
+                        detected_event = map_transcript_to_event(transcript)
 
-                        if matched_event:
-                            logger.info(f"Dopasowano komendę: {matched_event}")
+                        if detected_event != VoiceEvent.UNKNOWN:
+                            cmd = RecognizedCommand(transcript=transcript, event=detected_event)
 
-                            # Logika zmiany stanu na serwerze
-                            if matched_event == VoiceEvent.PAUSE:
-                                is_paused = True
-                            elif matched_event == VoiceEvent.RESUME:
-                                is_paused = False
-                            elif matched_event == VoiceEvent.RESET:
-                                coach = OverheadPassCoach()
-                            elif matched_event == VoiceEvent.STOP:
-                                stop_requested = True
+                            # Bezpieczne pobranie liczby powtórzeń (silnik ma sesję lub sprawdzamy bezpośrednio)
+                            reps_done = 0
+                            if hasattr(coach, 'session') and coach.session:
+                                reps_done = coach.session.total_reps
 
-                            # Tworzymy obiekt komendy wymagany przez funkcję pomocniczą frontendu
-                            cmd_obj = RecognizedCommand(event=matched_event, transcript=transcript)
+                            # Budujemy pełny pakiet JSON z komunikatem głosowym
+                            payload = voice_event_to_ws_message(cmd, rep_target=None, reps_done=reps_done)
 
-                            # Odesłanie potwierdzenia komendy głosowej na frontend
-                            ws_msg = voice_event_to_ws_message(
-                                cmd=cmd_obj,
-                                rep_target=None,
-                                reps_done=coach.session.total_reps
-                            )
-                            await websocket.send_json(ws_msg)
+                            logger.info(f"Wysyłam event głosowy do frontendu: {payload}")
+                            await websocket.send_json(payload)
 
-                            if stop_requested:
-                                break
-
-            # --- OPCJA B: Przesłano współrzędne ciała z MediaPipe (Tekst JSON) ---
+            # 2. OBSŁUGA KLATEK WIDEO / POSE LANDMARKS (Oryginalny tekst JSON)
             elif "text" in message:
-                if is_paused:
-                    continue  # Ignoruj klatki wideo podczas pauzy
-
                 raw_text = message["text"]
+
                 try:
                     _pose = PoseData.model_validate_json(raw_text)
-                except (json.JSONDecodeError, ValidationError):
-                    # Ignoruj błędy pojedynczych uszkodzonych ramek sieciowych
+                except json.JSONDecodeError as exc:
+                    await websocket.send_json(
+                        {
+                            "status": "error",
+                            "message": "Invalid JSON payload",
+                            "detail": str(exc),
+                        }
+                    )
+                    continue
+                except ValidationError as exc:
+                    await websocket.send_json(
+                        {
+                            "status": "error",
+                            "message": "Pose data validation failed",
+                            "errors": exc.errors(
+                                include_url=False,
+                                include_context=False,
+                            ),
+                        }
+                    )
                     continue
 
-                # Przetwarzanie klatki przez Coach Engine
+                # Zachowana w 100% oryginalna, działająca metoda i kolejność parametrów z coach_engine.py
                 result = coach.process_frame(_pose.camera, _pose.landmarks)
+
                 if result:
                     await websocket.send_json(result)
 
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
     except Exception as e:
-        logger.exception(f"Błąd w pętli głównej serwera: {e}")
+        logger.exception(f"Błąd pętli głównej serwera: {e}")
     finally:
-        # --- ZAPIS DO BAZY DANYCH PO ZAKOŃCZENIU ---
-        if coach.session.total_reps > 0:
-            try:
-                logger.info("Zapisywanie ukończonej sesji treningowej do SQLite...")
-                stats = coach.session
-                duration = int(stats.get_duration())
-                accuracy = stats.accuracy
+        logger.info("WebSocket /ws/trainer handler exiting - Próba zapisu sesji...")
 
-                avg_leg = sum(stats.leg_angles) / len(stats.leg_angles) if stats.leg_angles else 0.0
-                avg_body = sum(stats.shoulder_angles) / len(stats.shoulder_angles) if stats.shoulder_angles else 0.0
-                avg_arm = sum(stats.arm_angles) / len(stats.arm_angles) if stats.arm_angles else 0.0
+        # --- BEZPIECZNY ZAPIS DO BAZY DANYCH PO ZAKOŃCZENIU TRENINGU ---
+        # Sprawdzamy statystyki sesji z obiektu coach (jeśli silnik rejestruje powtórzenia w coach.session)
+        stats = getattr(coach, 'session', None)
+
+        # Szybki fallback: jeśli silnik nie ma właściwości .session, ale zlicza repCount bezpośrednio w zmiennych
+        if not stats and hasattr(coach, 'state'):
+            logger.info("Zapis do bazy danych: Brak składowej .session w silniku, pomijam automatyczny eksport.")
+        elif stats and stats.total_reps > 0:
+            try:
+                duration = int(time.time() - start_session_time)
+                accuracy = round((stats.good_reps / stats.total_reps) * 100, 1) if stats.total_reps > 0 else 0.0
+
+                avg_leg = round(sum(stats.leg_angles) / len(stats.leg_angles), 1) if stats.leg_angles else 0.0
+                avg_body = round(sum(stats.shoulder_angles) / len(stats.shoulder_angles), 1) if stats.shoulder_angles else 0.0
+                avg_arm = round(sum(stats.arm_angles) / len(stats.arm_angles), 1) if stats.arm_angles else 0.0
 
                 training_id = save_session(
                     training_type="górne",
@@ -149,10 +149,6 @@ async def trainer_websocket(websocket: WebSocket) -> None:
                     body_angle=avg_body,
                     arm_angle=avg_arm
                 )
-                logger.info(f"Sesja pomyślnie zapisana w DB pod ID: {training_id}")
+                logger.info(f"Sesja treningowa została pomyślnie zapisana w bazie pod ID: {training_id}")
             except Exception as db_exc:
-                logger.error(f"Nie udało się zapisać danych do bazy: {db_exc}")
-        else:
-            logger.info("Brak powtórzeń w tej sesji – pomijam zapis w DB.")
-
-        logger.info("WebSocket /ws/trainer handler exiting")
+                logger.error(f"Nie udało się zapisać danych sesji do bazy danych: {db_exc}")
