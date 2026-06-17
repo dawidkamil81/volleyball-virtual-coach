@@ -41,6 +41,59 @@ const Training = () => {
         side: { buffer: [], lastSendTime: 0 }
     });
 
+    //mikrofon
+    const recognitionRef = useRef(null);
+
+    const toggleMicrophone = (shouldListen) => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    if (shouldListen && !recognitionRef.current) {
+        recognitionRef.current = new SpeechRecognition();
+        recognitionRef.current.lang = 'pl-PL';
+        recognitionRef.current.continuous = true;
+        
+        recognitionRef.current.onresult = (event) => {
+            const transcript = event.results[event.results.length - 1][0].transcript.toLowerCase();
+            if (transcript.includes('stop')) {
+                handleFinishTraining();
+            }
+        };
+        
+        recognitionRef.current.start();
+    } else if (!shouldListen && recognitionRef.current) {
+        recognitionRef.current.stop();
+        recognitionRef.current = null;
+    }
+};
+
+
+useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+        recognitionRef.current = new SpeechRecognition();
+        recognitionRef.current.lang = 'pl-PL';
+        recognitionRef.current.continuous = true;
+        recognitionRef.current.onresult = (event) => {
+            const transcript = event.results[event.results.length - 1][0].transcript.toLowerCase();
+            if (transcript.includes('stop')) {
+                handleFinishTraining(); // To wywoła zapis i wyjście
+            }
+        };
+    }
+}, []); // Tylko raz przy ładowaniu strony
+
+// A to niech pilnuje włączania/wyłączania
+useEffect(() => {
+    if (!recognitionRef.current) return;
+    
+    if (currentPhase === 'START' || currentPhase === 'IDLE') {
+        try { recognitionRef.current.start(); } catch (e) {} // Włącz
+    } else {
+        try { recognitionRef.current.stop(); } catch (e) {} // Wyłącz
+    }
+}, [currentPhase]);
+
     // 1. Pobieranie listy kamer przy starcie
     useEffect(() => {
         const getDevices = async () => {
@@ -127,19 +180,18 @@ const Training = () => {
     }, [speak]);
 
     // --- NOWA FUNKCJA: ZAPIS TRENINGU W BAZIE ---
-    const handleFinishTraining = async () => {
+const handleFinishTraining = async () => {
+        // Jeśli nie kliknąłeś START, po prostu wyjdź bez zbędnych pytań
         if (!trainingStartTime) {
             navigate('/');
-            return; // Zakończono bez startu treningu
+            return;
         }
 
         const endTime = new Date();
         const durationSeconds = Math.floor((endTime - trainingStartTime) / 1000);
         
-        let accuracy = 0;
-        if (totalAttempts > 0) {
-            accuracy = (repCount / totalAttempts) * 100;
-        }
+        // Obliczamy skuteczność - przy 0 prób wynik to 0
+        let accuracy = totalAttempts > 0 ? (repCount / totalAttempts) * 100 : 0;
 
         const summaryData = {
             training_type: passType,
@@ -152,18 +204,23 @@ const Training = () => {
         };
 
         try {
-            await fetch('http://localhost:8000/api/training/save', {
+            // Dodajemy await, aby upewnić się, że serwer przyjął dane przed nawigacją
+            const response = await fetch('http://localhost:8000/api/training/save', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(summaryData)
             });
-            console.log("✅ Trening pomyślnie zapisany w bazie danych!");
+            
+            if (response.ok) {
+                console.log("✅ Trening pomyślnie zapisany!");
+            } else {
+                console.error("❌ Serwer zwrócił błąd zapisu.");
+            }
         } catch (error) {
-            console.error("❌ Błąd podczas zapisywania treningu:", error);
+            console.error("❌ Błąd połączenia z API (sprawdź czy serwer działa):", error);
         }
 
+        // Niezależnie od wyniku zapisu, wychodzimy do dashboardu
         navigate('/');
     };
 

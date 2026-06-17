@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from backend.schemas import PoseData, TrainingSummary
-from backend.db_query import save_training_sessionfrom backend.db_query import save_training_session, get_trainings
+from backend.db_query import save_training_session, get_trainings
 from backend.coach_engine import OverheadPassCoach
 
 logger = logging.getLogger(__name__)
