@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMediaPipe } from '../hooks/useMediaPipe';
 import useSpeech from '../hooks/useSpeech';
+import useVoiceCommand from '../hooks/useVoiceCommand';
 
 const Training = () => {
     const navigate = useNavigate();
@@ -41,58 +42,7 @@ const Training = () => {
         side: { buffer: [], lastSendTime: 0 }
     });
 
-    //mikrofon
-    const recognitionRef = useRef(null);
 
-    const toggleMicrophone = (shouldListen) => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
-
-    if (shouldListen && !recognitionRef.current) {
-        recognitionRef.current = new SpeechRecognition();
-        recognitionRef.current.lang = 'pl-PL';
-        recognitionRef.current.continuous = true;
-        
-        recognitionRef.current.onresult = (event) => {
-            const transcript = event.results[event.results.length - 1][0].transcript.toLowerCase();
-            if (transcript.includes('stop')) {
-                handleFinishTraining();
-            }
-        };
-        
-        recognitionRef.current.start();
-    } else if (!shouldListen && recognitionRef.current) {
-        recognitionRef.current.stop();
-        recognitionRef.current = null;
-    }
-};
-
-
-useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SpeechRecognition) {
-        recognitionRef.current = new SpeechRecognition();
-        recognitionRef.current.lang = 'pl-PL';
-        recognitionRef.current.continuous = true;
-        recognitionRef.current.onresult = (event) => {
-            const transcript = event.results[event.results.length - 1][0].transcript.toLowerCase();
-            if (transcript.includes('stop')) {
-                handleFinishTraining(); // To wywoła zapis i wyjście
-            }
-        };
-    }
-}, []); // Tylko raz przy ładowaniu strony
-
-// A to niech pilnuje włączania/wyłączania
-useEffect(() => {
-    if (!recognitionRef.current) return;
-    
-    if (currentPhase === 'START' || currentPhase === 'IDLE') {
-        try { recognitionRef.current.start(); } catch (e) {} // Włącz
-    } else {
-        try { recognitionRef.current.stop(); } catch (e) {} // Wyłącz
-    }
-}, [currentPhase]);
 
     // 1. Pobieranie listy kamer przy starcie
     useEffect(() => {
@@ -223,6 +173,12 @@ const handleFinishTraining = async () => {
         // Niezależnie od wyniku zapisu, wychodzimy do dashboardu
         navigate('/');
     };
+
+        //mikrofon
+    const recognitionRef = useRef(null);
+
+    // --- MIKROFON (TYLKO JEDNA DEFINICJA) ---
+    useVoiceCommand(handleFinishTraining, speak);
 
     // 3. Funkcja uśredniająca klatki (stary, płynny mechanizm)
     const sendLandmarksToAPI = (landmarks, cameraView) => {
