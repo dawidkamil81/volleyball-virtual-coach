@@ -9,14 +9,17 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from backend.schemas import PoseData
-
+from backend.schemas import PoseData, TrainingSummary
+from backend.db_query import save_training_session, get_trainings
 from backend.coach_engine import OverheadPassCoach
 
+# Inicjalizacja loggera dla potrzeb debugowania i rejestrowania zdarzeń aplikacji
 logger = logging.getLogger(__name__)
 
+# Instancja głównej aplikacji FastAPI
 app = FastAPI(title="Volleyball Personal Trainer", version="0.1.0")
 
+# Konfiguracja polityki CORS umożliwiającej aplikacjom klienckim (np. frontendowi w React/Vue) odpytywanie API z innych adresów
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,22 +28,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Punkt końcowy (POST) służący do zapisu podsumowania zakończonej sesji treningowej w bazie danych
+@app.post("/api/training/save")
+async def save_training_endpoint(summary: TrainingSummary):
+    try:
+        # Przekazanie zwalidowanych danych z obiektu Pydantic bezpośrednio do funkcji bazodanowej
+        training_id = save_training_session(
+            training_type=summary.training_type,
+            start_time=summary.start_time,
+            end_time=summary.end_time,
+            duration=summary.duration,
+            successful_reps=summary.successful_reps,
+            total_attempts=summary.total_attempts,
+            overall_accuracy=summary.overall_accuracy
+        )
+        return {"status": "success", "training_id": training_id}
+    except Exception as e:
+        logger.error(f"Błąd zapisu w bazie: {e}")
+        return {"status": "error", "message": str(e)}
+
+# Punkt końcowy (GET) zwracający listę wszystkich treningów historycznych dla widoku statystyk
+@app.get("/api/training/stats")
+async def get_training_stats_endpoint():
+    try:
+        trainings = get_trainings()
+        return {"status": "success", "data": trainings}
+    except Exception as e:
+        logger.error(f"Błąd pobierania bazy: {e}")
+        return {"status": "error", "message": str(e)}
+
+# Komunikacja dwukierunkowa w czasie rzeczywistym (WebSocket) służąca do ciągłej analizy wideo użytkownika
 @app.websocket("/ws/trainer")
 async def trainer_websocket(websocket: WebSocket) -> None:
     await websocket.accept()
     logger.info("WebSocket /ws/trainer accepted")
-    
+
+    # Inicjalizacja instancji silnika trenera dedykowanego do odbić oburącz górą
     coach = OverheadPassCoach()
-    
+
     try:
         while True:
             try:
+                # Oczekiwanie na klatkę danych (w postaci tekstu JSON) z klienta
                 raw_text = await websocket.receive_text()
             except WebSocketDisconnect:
                 logger.info("WebSocket client disconnected")
                 break
 
             try:
+                # Parsowanie i walidacja struktury przesłanych danych o punktach ciała za pomocą Pydantic
                 _pose = PoseData.model_validate_json(raw_text)
             except json.JSONDecodeError as exc:
                 await websocket.send_json(
@@ -64,11 +100,12 @@ async def trainer_websocket(websocket: WebSocket) -> None:
                 )
                 continue
 
-            # Process frame with Coach Engine
+            # Przetworzenie otrzymanych koordynatów kamery i punktów (MediaPipe landmarks) przez silnik decyzji
             result = coach.process_frame(_pose.camera, _pose.landmarks)
-            
+
+            # Jeżeli silnik wygenerował informację zwrotną (np. zmiana stanu, feedback), jest ona natychmiast odsyłana
             if result:
                 await websocket.send_json(result)
-                
+
     finally:
         logger.info("WebSocket /ws/trainer handler exiting")
