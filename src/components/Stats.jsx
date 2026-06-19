@@ -32,9 +32,10 @@ const Stats = () => {
   const formatDate = (isoString) => {
     if (!isoString) return "-";
     const date = new Date(isoString);
-    return date.toLocaleString('pl-PL', {
-      day: 'numeric', month: 'short', year: 'numeric',
-      hour: '2-digit', minute: '2-digit' \n    });
+    return date.toLocaleString('pl-PL', { 
+      day: 'numeric', month: 'short', year: 'numeric', 
+      hour: '2-digit', minute: '2-digit' 
+    });
   };
 
   return (

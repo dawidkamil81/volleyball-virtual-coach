@@ -88,7 +88,11 @@ const Training = () => {
     );
 
     // Funkcja wywoływana przy chęci zakończenia i zapisu treningu przez użytkownika
-    const handleStopTraining = async () => {
+    async function handleStopTraining() {
+        if (!trainingStartTime) {
+            navigate('/');
+            return;
+        }
         if (isSavingRef.current) return;
         isSavingRef.current = true;
 
@@ -129,6 +133,15 @@ const Training = () => {
     useVoiceCommand({
         'stop': handleStopTraining,
         'zakończ': handleStopTraining,
+    });
+
+    // 4. Uruchomienie DWÓCH instancji hooka MediaPipe
+    useMediaPipe(videoFrontRef, canvasFrontRef, frontCameraId, (results) => {
+        if (results.poseLandmarks) sendLandmarksToAPI(results.poseLandmarks, 'front');
+    });
+
+    useMediaPipe(videoSideRef, canvasSideRef, sideCameraId, (results) => {
+        if (results.poseLandmarks) sendLandmarksToAPI(results.poseLandmarks, 'side');
     });
 
     return (
@@ -172,7 +185,7 @@ const Training = () => {
                 </div>
 
                 {/* ZMIANA: Przycisk Zakończ wywołuje teraz zapis do API */}
-                <button onClick={handleFinishTraining} className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl font-bold">ZAKOŃCZ</button>
+                <button onClick={handleStopTraining} className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl font-bold">ZAKOŃCZ</button>
             </header>
 
             {/* --- GŁÓWNA TREŚĆ --- */}
