@@ -1,13 +1,16 @@
 import { useEffect, useRef } from 'react';
 import useSpeech from '../hooks/useSpeech';
 
-const useVoiceCommand = (onStopCommand, speakFunction) => {
+// ZMIANA: Dodano parametr onStartCommand
+const useVoiceCommand = (onStopCommand, onStartCommand, speakFunction) => {
     const onStopRef = useRef(onStopCommand);
-    const isRunning = useRef(false); // Flaga zapobiegająca dublowaniu startu
+    const onStartRef = useRef(onStartCommand); // Referencja dla startu
+    const isRunning = useRef(false); 
 
     useEffect(() => {
         onStopRef.current = onStopCommand;
-    }, [onStopCommand]);
+        onStartRef.current = onStartCommand; // Aktualizacja referencji
+    }, [onStopCommand, onStartCommand]);
 
     useEffect(() => {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -32,18 +35,23 @@ const useVoiceCommand = (onStopCommand, speakFunction) => {
             
             console.log("🎤 Mikrofon usłyszał:", transcript);
 
+            // ZMIANA: Obsługa komendy STOP
             if (transcript.includes('stop')) {
                 if (speakFunction) speakFunction("koniec");
                 if (onStopRef.current) {
                     onStopRef.current();
                 }
-                //
+            } 
+            // ZMIANA: Obsługa komendy START
+            else if (transcript.includes('start') || transcript.includes('zacznij')) {
+                if (speakFunction) speakFunction("startujemy");
+                if (onStartRef.current) {
+                    onStartRef.current();
+                }
             }
         };
 
-        // Zabezpieczenie przed zablokowaniem głównego wątku (Pętla Śmierci)
         recognition.onerror = (event) => {
-            // Ignorujemy błędy braku mowy (to normalne przy ciszy)
             if (event.error !== 'no-speech') {
                 console.warn("🎤 Błąd mikrofonu:", event.error);
             }
@@ -51,16 +59,12 @@ const useVoiceCommand = (onStopCommand, speakFunction) => {
 
         recognition.onend = () => {
             isRunning.current = false;
-            // Dodajemy 500ms (pół sekundy) przerwy, zanim pozwolimy mikrofonowi wystartować ponownie.
-            // To całkowicie ulecza problem klatkowania kamer (lagów)!
             setTimeout(() => {
                 try {
                     if (!isRunning.current) {
                         recognition.start();
                     }
-                } catch (error) {
-                    // ignorujemy ciche błędy startu
-                }
+                } catch (error) {}
             }, 500);
         };
 
@@ -79,7 +83,7 @@ const useVoiceCommand = (onStopCommand, speakFunction) => {
             } catch (e) {}
             isRunning.current = false;
         };
-    }, []); 
+    }, [speakFunction]); 
 };
 
 export default useVoiceCommand;

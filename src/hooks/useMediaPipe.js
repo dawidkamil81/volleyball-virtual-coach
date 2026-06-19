@@ -2,59 +2,70 @@ import { useEffect, useRef } from 'react';
 import { Pose, VERSION } from '@mediapipe/pose';
 import * as drawing from '@mediapipe/drawing_utils';
 
-export const useMediaPipe = (videoRef, canvasRef, deviceId, onResultsCallback) => {
+export const useMediaPipe = (videoRef, canvasRef, deviceId, onResultsCallback, initDelay = 0) => {
     const streamRef = useRef(null);
     const animationRef = useRef(null);
     const poseRef = useRef(null);
     const callbackRef = useRef(onResultsCallback);
 
-    // Zawsze trzymamy najnowszą wersję funkcji callback (omija problemy Reacta)
     useEffect(() => {
         callbackRef.current = onResultsCallback;
     }, [onResultsCallback]);
 
     // --------------------------------------------------------
-    // 1. CYKL ŻYCIA MÓZGU (AI): Uruchamia się TYLKO RAZ
+    // 1. CYKL ŻYCIA MÓZGU (AI)
     // --------------------------------------------------------
     useEffect(() => {
-        const pose = new Pose({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose@${VERSION}/${file}`,
-        });
+        let pose = null;
+        let isMounted = true; // Zabezpieczenie
 
-        pose.setOptions({
-            modelComplexity: 0,
-            smoothLandmarks: true,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5,
-        });
+        // ZMIANA 2: Obudowujemy tworzenie modelu w setTimeout
+        const timer = setTimeout(() => {
+            if (!isMounted) return;
 
-        pose.onResults((results) => {
-            if (!canvasRef.current) return;
-            const canvasCtx = canvasRef.current.getContext('2d');
-            canvasCtx.save();
-            canvasCtx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-            canvasCtx.drawImage(results.image, 0, 0, canvasRef.current.width, canvasRef.current.height);
+            pose = new Pose({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose@${VERSION}/${file}`,
+            });
 
-            if (results.poseLandmarks) {
-                drawing.drawConnectors(canvasCtx, results.poseLandmarks, Pose.POSE_CONNECTIONS,
-                    { color: '#00FF00', lineWidth: 4 });
-                drawing.drawLandmarks(canvasCtx, results.poseLandmarks,
-                    { color: '#FF0000', lineWidth: 2 });
-            }
-            canvasCtx.restore();
+            pose.setOptions({
+                modelComplexity: 0,
+                smoothLandmarks: true,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5,
+            });
 
-            if (callbackRef.current) {
-                callbackRef.current(results);
-            }
-        });
+            pose.onResults((results) => {
+                if (!canvasRef.current) return;
+                const canvasCtx = canvasRef.current.getContext('2d');
+                canvasCtx.save();
+                canvasCtx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+                canvasCtx.drawImage(results.image, 0, 0, canvasRef.current.width, canvasRef.current.height);
 
-        poseRef.current = pose; // Zapisujemy gotowy model do pamięci
+                if (results.poseLandmarks) {
+                    drawing.drawConnectors(canvasCtx, results.poseLandmarks, Pose.POSE_CONNECTIONS,
+                        { color: '#00FF00', lineWidth: 4 });
+                    drawing.drawLandmarks(canvasCtx, results.poseLandmarks,
+                        { color: '#FF0000', lineWidth: 2 });
+                }
+                canvasCtx.restore();
+
+                if (callbackRef.current) {
+                    callbackRef.current(results);
+                }
+            });
+
+            poseRef.current = pose;
+        }, initDelay); 
 
         return () => {
-            pose.close(); // Model zamykamy dopiero, gdy całkowicie wyjdziesz z widoku treningu
+            isMounted = false;
+            clearTimeout(timer); // Sprzątamy timer
+            if (pose) {
+                pose.close();
+            }
             poseRef.current = null;
         };
-    }, []); // <-- Pusta tablica oznacza "Wykonaj tylko raz przy wejściu na stronę"
+    }, [initDelay]);
 
     // --------------------------------------------------------
     // 2. CYKL ŻYCIA OCZU (Kamery): Reaguje na zmiany urządzenia
@@ -80,7 +91,6 @@ export const useMediaPipe = (videoRef, canvasRef, deviceId, onResultsCallback) =
                     };
 
                     const sendFrame = async () => {
-                        // Wysyłaj klatki tylko wtedy, gdy kamera działa i MÓZG (poseRef) istnieje
                         if (videoRef.current && !videoRef.current.paused && videoRef.current.readyState >= 2 && poseRef.current) {
                             try {
                                 await poseRef.current.send({ image: videoRef.current });
@@ -103,7 +113,6 @@ export const useMediaPipe = (videoRef, canvasRef, deviceId, onResultsCallback) =
         startCamera();
 
         return () => {
-            // Sprzątamy TYLKO po kamerze. Mózg AI zostawiamy w spokoju!
             if (animationRef.current) cancelAnimationFrame(animationRef.current);
             if (streamRef.current) {
                 streamRef.current.getTracks().forEach(track => track.stop());
@@ -112,7 +121,7 @@ export const useMediaPipe = (videoRef, canvasRef, deviceId, onResultsCallback) =
                 videoRef.current.srcObject = null;
             }
         };
-    }, [deviceId, videoRef]); // Reaguj TYLKO na zmianę id kamery (np. po wypięciu kabla)
+    }, [deviceId, videoRef]); 
 
     return null;
 };
