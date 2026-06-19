@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from backend.schemas import PoseData, TrainingSummary
 from backend.db_query import save_training_session, get_trainings
-from backend.coach_engine import OverheadPassCoach
+from backend.coach_engine import OverheadPassCoach, BumpPassCoach
 
 # Inicjalizacja loggera dla potrzeb debugowania i rejestrowania zdarzeń aplikacji
 logger = logging.getLogger(__name__)
@@ -62,50 +62,44 @@ async def get_training_stats_endpoint():
 async def trainer_websocket(websocket: WebSocket) -> None:
     await websocket.accept()
     logger.info("WebSocket /ws/trainer accepted")
-
-    # Inicjalizacja instancji silnika trenera dedykowanego do odbić oburącz górą
-    coach = OverheadPassCoach()
-
+    
+    # Inicjalizujemy obu trenerów na starcie połączenia
+    coach_overhead = OverheadPassCoach()
+    coach_bump = BumpPassCoach()
+    
+    current_exercise_type = None
+    
     try:
         while True:
             try:
-                # Oczekiwanie na klatkę danych (w postaci tekstu JSON) z klienta
                 raw_text = await websocket.receive_text()
             except WebSocketDisconnect:
                 logger.info("WebSocket client disconnected")
                 break
 
             try:
-                # Parsowanie i walidacja struktury przesłanych danych o punktach ciała za pomocą Pydantic
                 _pose = PoseData.model_validate_json(raw_text)
             except json.JSONDecodeError as exc:
-                await websocket.send_json(
-                    {
-                        "status": "error",
-                        "message": "Invalid JSON payload",
-                        "detail": str(exc),
-                    }
-                )
+                await websocket.send_json({"status": "error", "message": "Invalid JSON payload"})
                 continue
             except ValidationError as exc:
-                await websocket.send_json(
-                    {
-                        "status": "error",
-                        "message": "Pose data validation failed",
-                        "errors": exc.errors(
-                            include_url=False,
-                            include_context=False,
-                        ),
-                    }
-                )
+                await websocket.send_json({"status": "error", "message": "Pose data validation failed", "errors": exc.errors()})
                 continue
 
-            # Przetworzenie otrzymanych koordynatów kamery i punktów (MediaPipe landmarks) przez silnik decyzji
-            result = coach.process_frame(_pose.camera, _pose.landmarks)
+            # Resetujemy stan trenerów, jeśli użytkownik zmieni ćwiczenie w trakcie treningu
+            if current_exercise_type != _pose.exerciseType:
+                current_exercise_type = _pose.exerciseType
+                coach_overhead = OverheadPassCoach()
+                coach_bump = BumpPassCoach()
 
-            # Jeżeli silnik wygenerował informację zwrotną (np. zmiana stanu, feedback), jest ona natychmiast odsyłana
+            # Wybór odpowiedniego silnika
+            active_coach = coach_bump if _pose.exerciseType == "dolne" else coach_overhead
+
+            # Process frame with active Coach Engine
+            result = active_coach.process_frame(_pose.camera, _pose.landmarks)
+            
             if result:
                 await websocket.send_json(result)
-
+                
     finally:
         logger.info("WebSocket /ws/trainer handler exiting")
